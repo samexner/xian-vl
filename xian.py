@@ -125,9 +125,167 @@ class TranslationOverlay(QWidget):
         self.close()
 
 
+class DraggableBox(QWidget):
+    """Draggable and resizable box that can be positioned before confirming"""
+    
+    def __init__(self, is_capture=True, parent=None):
+        super().__init__(parent, Qt.WindowType.FramelessWindowHint | 
+                        Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        
+        self.is_capture = is_capture
+        self.dragging = False
+        self.resizing = False
+        self.drag_start = QPoint()
+        self.resize_edge = None
+        self.resize_margin = 10
+        
+        # Start with a reasonable size in the center of the screen
+        screen = QGuiApplication.primaryScreen().geometry()
+        box_width = 300
+        box_height = 150
+        x = (screen.width() - box_width) // 2
+        y = (screen.height() - box_height) // 2
+        
+        self.setGeometry(x, y, box_width, box_height)
+        self.setMouseTracking(True)
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        # Semi-transparent background
+        if self.is_capture:
+            bg_color = QColor(0, 255, 0, 60)
+            border_color = QColor(0, 255, 0, 255)
+            label = "CAPTURE REGION"
+        else:
+            bg_color = QColor(255, 0, 0, 60)
+            border_color = QColor(255, 0, 0, 255)
+            label = "EXCLUDE REGION"
+        
+        painter.fillRect(self.rect(), bg_color)
+        
+        # Border
+        painter.setPen(QPen(border_color, 3))
+        painter.drawRect(1, 1, self.width()-2, self.height()-2)
+        
+        # Label
+        painter.setPen(border_color)
+        font = QFont("Sans", 12, QFont.Weight.Bold)
+        painter.setFont(font)
+        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, label)
+        
+        # Instructions
+        painter.setPen(QColor(255, 255, 255))
+        font = QFont("Sans", 9)
+        painter.setFont(font)
+        instructions = "Drag to move • Resize from edges/corners"
+        painter.drawText(self.rect().adjusted(0, 30, 0, 0), 
+                        Qt.AlignmentFlag.AlignCenter, instructions)
+        
+        # Resize handles
+        handle_size = 10
+        painter.setBrush(border_color)
+        # Corners
+        painter.drawEllipse(QRect(-handle_size//2, -handle_size//2, handle_size, handle_size))
+        painter.drawEllipse(QRect(self.width()-handle_size//2, -handle_size//2, handle_size, handle_size))
+        painter.drawEllipse(QRect(-handle_size//2, self.height()-handle_size//2, handle_size, handle_size))
+        painter.drawEllipse(QRect(self.width()-handle_size//2, self.height()-handle_size//2, 
+                        handle_size, handle_size))
+        
+    def get_resize_edge(self, pos):
+        """Determine which edge/corner is being grabbed"""
+        margin = self.resize_margin
+        w, h = self.width(), self.height()
+        
+        left = pos.x() < margin
+        right = pos.x() > w - margin
+        top = pos.y() < margin
+        bottom = pos.y() > h - margin
+        
+        if left and top:
+            return 'top_left'
+        elif right and top:
+            return 'top_right'
+        elif left and bottom:
+            return 'bottom_left'
+        elif right and bottom:
+            return 'bottom_right'
+        elif left:
+            return 'left'
+        elif right:
+            return 'right'
+        elif top:
+            return 'top'
+        elif bottom:
+            return 'bottom'
+        return None
+        
+    def update_cursor(self, pos):
+        """Update cursor based on position"""
+        edge = self.get_resize_edge(pos)
+        
+        if edge in ['top_left', 'bottom_right']:
+            self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+        elif edge in ['top_right', 'bottom_left']:
+            self.setCursor(Qt.CursorShape.SizeBDiagCursor)
+        elif edge in ['left', 'right']:
+            self.setCursor(Qt.CursorShape.SizeHorCursor)
+        elif edge in ['top', 'bottom']:
+            self.setCursor(Qt.CursorShape.SizeVerCursor)
+        else:
+            self.setCursor(Qt.CursorShape.SizeAllCursor)
+            
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.drag_start = event.globalPosition().toPoint()
+            self.resize_edge = self.get_resize_edge(event.pos())
+            
+            if self.resize_edge:
+                self.resizing = True
+                self.original_geometry = self.geometry()
+            else:
+                self.dragging = True
+                
+    def mouseMoveEvent(self, event):
+        if self.resizing and self.resize_edge:
+            delta = event.globalPosition().toPoint() - self.drag_start
+            geo = QRect(self.original_geometry)
+            
+            if 'left' in self.resize_edge:
+                geo.setLeft(geo.left() + delta.x())
+            if 'right' in self.resize_edge:
+                geo.setRight(geo.right() + delta.x())
+            if 'top' in self.resize_edge:
+                geo.setTop(geo.top() + delta.y())
+            if 'bottom' in self.resize_edge:
+                geo.setBottom(geo.bottom() + delta.y())
+                
+            # Minimum size
+            if geo.width() > 50 and geo.height() > 50:
+                self.setGeometry(geo)
+                
+        elif self.dragging:
+            delta = event.globalPosition().toPoint() - self.drag_start
+            new_pos = self.pos() + delta
+            self.move(new_pos)
+            self.drag_start = event.globalPosition().toPoint()
+        else:
+            self.update_cursor(event.pos())
+            
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.dragging = False
+            self.resizing = False
+            self.resize_edge = None
+
+
 class RegionBox(QWidget):
-    """Draggable and resizable box for capture/exclude regions"""
-    region_changed = pyqtSignal(QRect)
+    """Fixed region box after confirmation"""
     
     def __init__(self, rect, is_capture=True, parent=None):
         super().__init__(parent, Qt.WindowType.FramelessWindowHint | 
@@ -252,14 +410,12 @@ class RegionBox(QWidget):
             # Minimum size
             if geo.width() > 30 and geo.height() > 30:
                 self.setGeometry(geo)
-                self.region_changed.emit(geo)
                 
         elif self.dragging:
             delta = event.globalPosition().toPoint() - self.drag_start
             new_pos = self.pos() + delta
             self.move(new_pos)
             self.drag_start = event.globalPosition().toPoint()
-            self.region_changed.emit(self.geometry())
         else:
             self.update_cursor(event.pos())
             
@@ -274,69 +430,89 @@ class RegionBox(QWidget):
         self.close()
 
 
-class SelectionOverlay(QWidget):
-    """Overlay for selecting screen regions"""
-    selection_complete = pyqtSignal(QRect)
+class BoxCreationOverlay(QWidget):
+    """Fullscreen overlay for creating and positioning boxes"""
+    boxes_confirmed = pyqtSignal(list)  # List of (rect, is_capture) tuples
     
-    def __init__(self, screen_geometry):
+    def __init__(self, is_capture=True):
         super().__init__(None, Qt.WindowType.FramelessWindowHint | 
-                        Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.X11BypassWindowManagerHint)
+                        Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-        self.setGeometry(screen_geometry)
-        self.setWindowOpacity(1.0)
         
-        self.selection_start = None
-        self.selection_current = None
-        self.setCursor(Qt.CursorShape.CrossCursor)
-        self.setMouseTracking(True)
+        screen = QGuiApplication.primaryScreen().geometry()
+        self.setGeometry(screen)
+        
+        self.is_capture = is_capture
+        self.boxes = []
+        
+        # Create first box
+        self.create_new_box()
+        
         self.showFullScreen()
+        
+    def create_new_box(self):
+        """Create a new draggable box"""
+        box = DraggableBox(is_capture=self.is_capture, parent=self)
+        self.boxes.append(box)
+        box.raise_()
         
     def paintEvent(self, event):
         painter = QPainter(self)
         
-        # Semi-transparent overlay
-        painter.fillRect(self.rect(), QColor(0, 0, 0, 100))
+        # Dark semi-transparent background
+        painter.fillRect(self.rect(), QColor(0, 0, 0, 150))
         
-        if self.selection_start and self.selection_current:
-            # Calculate selection rectangle
-            rect = QRect(self.selection_start, self.selection_current).normalized()
+        # Instructions
+        painter.setPen(QColor(255, 255, 255))
+        font = QFont("Sans", 14, QFont.Weight.Bold)
+        painter.setFont(font)
+        
+        instructions = [
+            f"Creating {'CAPTURE' if self.is_capture else 'EXCLUDE'} Regions",
+            "",
+            "• Drag boxes to position them",
+            "• Resize from edges and corners",
+            "• Press SPACE to add another box",
+            "• Press ENTER to confirm all boxes",
+            "• Press ESC to cancel"
+        ]
+        
+        y = 50
+        for line in instructions:
+            painter.drawText(QRect(50, y, self.width()-100, 30), 
+                           Qt.AlignmentFlag.AlignLeft, line)
+            y += 35
             
-            # Clear selected area
-            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
-            painter.fillRect(rect, Qt.GlobalColor.transparent)
-            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
-            
-            # Draw border
-            painter.setPen(QPen(QColor(0, 150, 255), 2))
-            painter.drawRect(rect)
-            
-    def mousePressEvent(self, event):
-        self.selection_start = event.pos()
-        self.selection_current = event.pos()
-        self.update()
-        
-    def mouseMoveEvent(self, event):
-        self.selection_current = event.pos()
-        self.update()
-        
-    def mouseReleaseEvent(self, event):
-        if self.selection_start:
-            rect = QRect(self.selection_start, self.selection_current).normalized()
-            if rect.width() > 10 and rect.height() > 10:
-                # Convert to screen coordinates
-                screen_rect = QRect(
-                    self.x() + rect.x(),
-                    self.y() + rect.y(),
-                    rect.width(),
-                    rect.height()
-                )
-                self.selection_complete.emit(screen_rect)
-        self.close()
-        
     def keyPressEvent(self, event):
-        if event.key() == Qt.Key.Key_Escape:
-            self.close()
+        if event.key() == Qt.Key.Key_Return or event.key() == Qt.Key.Key_Enter:
+            # Confirm all boxes
+            confirmed_boxes = []
+            for box in self.boxes:
+                confirmed_boxes.append((box.geometry(), self.is_capture))
+            self.boxes_confirmed.emit(confirmed_boxes)
+            self.close_all()
+            
+        elif event.key() == Qt.Key.Key_Space:
+            # Create another box
+            self.create_new_box()
+            self.update()
+            
+        elif event.key() == Qt.Key.Key_Escape:
+            # Cancel
+            self.close_all()
+            
+        elif event.key() == Qt.Key.Key_Delete or event.key() == Qt.Key.Key_Backspace:
+            # Delete last box
+            if len(self.boxes) > 1:
+                self.boxes[-1].close()
+                self.boxes.pop()
+                self.update()
+                
+    def close_all(self):
+        """Close all boxes and this overlay"""
+        for box in self.boxes:
+            box.close()
+        self.close()
 
 
 class SettingsDialog(QDialog):
@@ -409,8 +585,8 @@ class SettingsDialog(QDialog):
         # Hotkeys info
         hotkey_group = QGroupBox("Hotkeys")
         hotkey_layout = QVBoxLayout()
-        hotkey_layout.addWidget(QLabel("Ctrl+Shift+C - Add Capture Region"))
-        hotkey_layout.addWidget(QLabel("Ctrl+Shift+E - Add Exclude Region"))
+        hotkey_layout.addWidget(QLabel("Ctrl+Shift+C - Add Capture Regions"))
+        hotkey_layout.addWidget(QLabel("Ctrl+Shift+E - Add Exclude Regions"))
         hotkey_layout.addWidget(QLabel("Ctrl+Shift+T - Translate Now"))
         hotkey_layout.addWidget(QLabel("Ctrl+Shift+R - Toggle Region Boxes"))
         hotkey_layout.addWidget(QLabel("Ctrl+Shift+X - Clear All Overlays"))
@@ -470,11 +646,11 @@ class MainWindow(QMainWindow):
         """Setup global hotkeys"""
         # Ctrl+Shift+C - Add capture region
         shortcut_capture = QShortcut(QKeySequence("Ctrl+Shift+C"), self)
-        shortcut_capture.activated.connect(self.select_capture_region)
+        shortcut_capture.activated.connect(self.create_capture_regions)
         
         # Ctrl+Shift+E - Add exclude region
         shortcut_exclude = QShortcut(QKeySequence("Ctrl+Shift+E"), self)
-        shortcut_exclude.activated.connect(self.select_exclude_region)
+        shortcut_exclude.activated.connect(self.create_exclude_regions)
         
         # Ctrl+Shift+T - Translate now
         shortcut_translate = QShortcut(QKeySequence("Ctrl+Shift+T"), self)
@@ -501,12 +677,12 @@ class MainWindow(QMainWindow):
         # Buttons
         btn_layout = QVBoxLayout()
         
-        select_btn = QPushButton("Add Capture Region (Ctrl+Shift+C)")
-        select_btn.clicked.connect(self.select_capture_region)
+        select_btn = QPushButton("Add Capture Regions (Ctrl+Shift+C)")
+        select_btn.clicked.connect(self.create_capture_regions)
         btn_layout.addWidget(select_btn)
         
-        exclude_btn = QPushButton("Add Exclude Region (Ctrl+Shift+E)")
-        exclude_btn.clicked.connect(self.select_exclude_region)
+        exclude_btn = QPushButton("Add Exclude Regions (Ctrl+Shift+E)")
+        exclude_btn.clicked.connect(self.create_exclude_regions)
         btn_layout.addWidget(exclude_btn)
         
         toggle_btn = QPushButton("Toggle Region Boxes (Ctrl+Shift+R)")
@@ -533,7 +709,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(btn_layout)
         
         # Status
-        self.status_label = QLabel("Ready - Use hotkeys or buttons to control")
+        self.status_label = QLabel("Ready - Press buttons or use hotkeys to get started")
         self.status_label.setStyleSheet("padding: 5px; background-color: #f0f0f0;")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
@@ -541,38 +717,32 @@ class MainWindow(QMainWindow):
         central.setLayout(layout)
         self.setCentralWidget(central)
         
-    def select_capture_region(self):
-        """Open selection overlay for capture region"""
-        screen = QGuiApplication.primaryScreen()
-        geometry = screen.geometry()
+    def create_capture_regions(self):
+        """Open box creation overlay for capture regions"""
+        self.box_overlay = BoxCreationOverlay(is_capture=True)
+        self.box_overlay.boxes_confirmed.connect(self.add_confirmed_boxes)
         
-        self.selection_overlay = SelectionOverlay(geometry)
-        self.selection_overlay.selection_complete.connect(self.add_capture_region)
+    def create_exclude_regions(self):
+        """Open box creation overlay for exclude regions"""
+        self.box_overlay = BoxCreationOverlay(is_capture=False)
+        self.box_overlay.boxes_confirmed.connect(self.add_confirmed_boxes)
         
-    def select_exclude_region(self):
-        """Open selection overlay for exclude region"""
-        screen = QGuiApplication.primaryScreen()
-        geometry = screen.geometry()
+    def add_confirmed_boxes(self, boxes):
+        """Add confirmed boxes as fixed region boxes"""
+        for rect, is_capture in boxes:
+            box = RegionBox(rect, is_capture=is_capture)
+            if is_capture:
+                self.capture_boxes.append(box)
+            else:
+                self.exclude_boxes.append(box)
         
-        self.selection_overlay = SelectionOverlay(geometry)
-        self.selection_overlay.selection_complete.connect(self.add_exclude_region)
+        capture_count = sum(1 for _, is_cap in boxes if is_cap)
+        exclude_count = sum(1 for _, is_cap in boxes if not is_cap)
         
-    def add_capture_region(self, rect):
-        box = RegionBox(rect, is_capture=True)
-        box.region_changed.connect(lambda r: self.update_region_box(box, r))
-        self.capture_boxes.append(box)
-        self.status_label.setText(f"Added capture region. Total: {len(self.capture_boxes)}")
-        
-    def add_exclude_region(self, rect):
-        box = RegionBox(rect, is_capture=False)
-        box.region_changed.connect(lambda r: self.update_region_box(box, r))
-        self.exclude_boxes.append(box)
-        self.status_label.setText(f"Added exclude region. Total: {len(self.exclude_boxes)}")
-        
-    def update_region_box(self, box, rect):
-        """Called when a region box is moved or resized"""
-        # The box already has the new geometry, no need to do anything
-        pass
+        if capture_count > 0:
+            self.status_label.setText(f"Added {capture_count} capture region(s). Total: {len(self.capture_boxes)}")
+        else:
+            self.status_label.setText(f"Added {exclude_count} exclude region(s). Total: {len(self.exclude_boxes)}")
         
     def toggle_region_boxes(self):
         """Show/hide region boxes"""
