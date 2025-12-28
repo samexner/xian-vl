@@ -22,11 +22,11 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import (
     Qt, QTimer, QThread, pyqtSignal, QRect, QPoint, QSize,
-    QSettings, pyqtSlot
+    QSettings, pyqtSlot, QBuffer, QIODevice
 )
 from PyQt6.QtGui import (
     QPixmap, QPainter, QPen, QColor, QFont, QScreen, QGuiApplication,
-    QMouseEvent, QPaintEvent, QKeyEvent
+    QMouseEvent, QPaintEvent, QKeyEvent, QImage
 )
 
 try:
@@ -292,6 +292,22 @@ class ScreenCapture:
 
         return None
 
+    @staticmethod
+    def compress_image(image_data: bytes, quality: int = 75) -> bytes:
+        """Compress image to JPEG with specified quality"""
+        try:
+            image = QImage.fromData(image_data)
+            if image.isNull():
+                return image_data
+
+            buffer = QBuffer()
+            buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+            image.save(buffer, "JPG", quality)
+            return buffer.data().data()
+        except Exception as e:
+            print(f"Compression error: {e}")
+            return image_data
+
 
 class RegionSelector(QWidget):
     """Widget for selecting screen regions"""
@@ -469,8 +485,11 @@ class TranslationWorker(QThread):
         self.request_show_overlay.emit()
         
         if image_data:
+            # Compress image before sending to API
+            compressed_data = ScreenCapture.compress_image(image_data)
+            
             results = self.ollama_api.translate_image(
-                image_data, self.source_lang, self.target_lang, self.mode
+                compressed_data, self.source_lang, self.target_lang, self.mode
             )
             if results:
                 self.translation_ready.emit(results)
@@ -493,8 +512,11 @@ class TranslationWorker(QThread):
 
             if image_data:
                 any_captured = True
+                # Compress image before sending to API
+                compressed_data = ScreenCapture.compress_image(image_data)
+                
                 results = self.ollama_api.translate_image(
-                    image_data, self.source_lang, self.target_lang, TranslationMode.REGION_SELECT
+                    compressed_data, self.source_lang, self.target_lang, TranslationMode.REGION_SELECT
                 )
 
                 # Adjust coordinates for region
