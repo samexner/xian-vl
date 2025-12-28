@@ -163,7 +163,27 @@ You are a helpful assistant that translates text in images.
                 # print(f"API Response Content: {content}")
 
                 if mode == TranslationMode.FULL_SCREEN:
-                    return self._parse_full_screen_response(content)
+                    results = self._parse_full_screen_response(content)
+                    # Adjust for normalized coordinates (0-1000) if used by the model
+                    # Qwen-VL models often use 1000x1000 normalized coordinates
+                    # Let's check if the coordinates seem normalized
+                    is_normalized = any(
+                        0 < r.x <= 1000 and 0 < r.y <= 1000 
+                        for r in results if r.x != 0 or r.y != 0
+                    )
+                    
+                    if is_normalized:
+                        screen = QGuiApplication.primaryScreen().geometry()
+                        screen_width = screen.width()
+                        screen_height = screen.height()
+                        
+                        for r in results:
+                            r.x = int(r.x * screen_width / 1000)
+                            r.y = int(r.y * screen_height / 1000)
+                            r.width = int(r.width * screen_width / 1000)
+                            r.height = int(r.height * screen_height / 1000)
+                    
+                    return results
                 else:
                     return [TranslationResult(content, 0, 0, 100, 30)]
             elif response.status_code == 404:
@@ -371,17 +391,24 @@ class TranslationOverlay(QWidget):
             painter.setBrush(QColor(0, 0, 0, opacity))
             painter.setPen(Qt.PenStyle.NoPen)
 
+            # Add padding to the box
+            padding = 10
             rect = QRect(
-                translation.x, translation.y,
-                translation.width, translation.height
+                translation.x - padding, translation.y - padding,
+                translation.width + (padding * 2), translation.height + (padding * 2)
             )
+            
+            # Ensure the box is large enough for some text even if the model gave a tiny box
+            if rect.width() < 100: rect.setWidth(100)
+            if rect.height() < 40: rect.setHeight(40)
+            
             painter.drawRoundedRect(rect, 5, 5)
 
             # Draw text
             painter.setPen(QColor(255, 255, 255))
             painter.drawText(
                 rect,
-                Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter,
+                Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextWordWrap,
                 translation.translated_text
             )
 
