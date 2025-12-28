@@ -336,7 +336,8 @@ class TranslationOverlay(QWidget):
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
             Qt.WindowType.WindowStaysOnTopHint |
-            Qt.WindowType.Tool
+            Qt.WindowType.Tool |
+            Qt.WindowType.WindowTransparentForInput
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
@@ -389,6 +390,8 @@ class TranslationWorker(QThread):
     """Worker thread for handling translations"""
 
     translation_ready = pyqtSignal(list)
+    request_hide_overlay = pyqtSignal()
+    request_show_overlay = pyqtSignal()
 
     def __init__(self, ollama_api: OllamaAPI):
         super().__init__()
@@ -433,7 +436,11 @@ class TranslationWorker(QThread):
 
     def _translate_full_screen(self):
         """Handle full screen translation"""
+        self.request_hide_overlay.emit()
+        self.msleep(100)  # Wait for overlay to hide
         image_data = ScreenCapture.capture_screen()
+        self.request_show_overlay.emit()
+        
         if image_data:
             results = self.ollama_api.translate_image(
                 image_data, self.source_lang, self.target_lang, self.mode
@@ -443,7 +450,11 @@ class TranslationWorker(QThread):
 
     def _translate_regions(self):
         """Handle region-based translation"""
+        self.request_hide_overlay.emit()
+        self.msleep(100)  # Wait for overlay to hide
+        
         all_results = []
+        any_captured = False
 
         for region in self.regions:
             if not region.enabled:
@@ -454,6 +465,7 @@ class TranslationWorker(QThread):
             )
 
             if image_data:
+                any_captured = True
                 results = self.ollama_api.translate_image(
                     image_data, self.source_lang, self.target_lang, TranslationMode.REGION_SELECT
                 )
@@ -464,6 +476,8 @@ class TranslationWorker(QThread):
                     result.y += region.y
                     all_results.append(result)
 
+        self.request_show_overlay.emit()
+        
         if all_results:
             self.translation_ready.emit(all_results)
 
@@ -685,6 +699,12 @@ class MainWindow(QMainWindow):
 
         self.translation_worker.translation_ready.connect(
             self.translation_overlay.update_translations
+        )
+        self.translation_worker.request_hide_overlay.connect(
+            self.translation_overlay.hide
+        )
+        self.translation_worker.request_show_overlay.connect(
+            self.translation_overlay.show
         )
 
     def check_api_status(self):
