@@ -31,8 +31,8 @@ A real-time game translation overlay for Linux that uses local AI (Ollama + Qwen
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/xian.git
-   cd xian
+   git clone https://github.com/samexner/xian-vl.git
+   cd xian-vl
    ```
 
 2. Install dependencies:
