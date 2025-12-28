@@ -26,7 +26,7 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QPixmap, QPainter, QPen, QColor, QFont, QScreen, QGuiApplication,
-    QMouseEvent, QPaintEvent, QKeyEvent, QImage
+    QMouseEvent, QPaintEvent, QKeyEvent, QImage, QIcon
 )
 
 try:
@@ -68,7 +68,7 @@ class TranslationResult:
 class OllamaAPI:
     """Interface to local Ollama Qwen3-VL API"""
 
-    def __init__(self, base_url: str = "http://192.168.0.162:11434"):
+    def __init__(self, base_url: str = "http://localhost:11434"):
         self.base_url = base_url
         self.model = "qwen3-vl:8b-instruct"
 
@@ -293,21 +293,43 @@ class ScreenCapture:
         return None
 
     @staticmethod
-    def compress_image(image_data: bytes, quality: int = 75) -> bytes:
+    def compress_image(image_data: bytes, quality: int = 50) -> bytes:
         """Compress image to JPEG with specified quality"""
-        try:
-            image = QImage.fromData(image_data)
-            if image.isNull():
-                return image_data
-
-            buffer = QBuffer()
-            buffer.open(QIODevice.OpenModeFlag.WriteOnly)
-            image.save(buffer, "JPG", quality)
-            return buffer.data().data()
-        except Exception as e:
-            print(f"Compression error: {e}")
+        # 1. Load the image from provided data
+        image = QImage.fromData(image_data)
+        
+        if image.isNull():
+            print("Warning: Failed to load image for compression")
             return image_data
 
+        # 2. Convert to RGB888 for consistent JPEG compression
+        # Use the correct PyQt6 enum path: QImage.Format.Format_RGB888
+        image = image.convertToFormat(QImage.Format.Format_RGB888)
+
+        # 3. Calculate "Rule of 32" dimensions
+        w, h = image.width(), image.height()
+        
+        # Avoid division by zero and handle tiny images
+        if w == 0 or h == 0:
+            return image_data
+            
+        scale = 640 / max(w, h)
+        
+        # Ensure at least 32 pixels
+        new_w = max(32, int((w * scale) // 32) * 32)
+        new_h = max(32, int((h * scale) // 32) * 32)
+
+        # 4. High-quality downscaling
+        # FastTransformation is quicker, but SmoothTransformation is better for UI text
+        scaled_image = image.scaled(new_w, new_h, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+
+        # 5. Save with compression to memory buffer
+        buffer = QBuffer()
+        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+        # Quality range is 0-100.
+        scaled_image.save(buffer, "JPG", quality)
+        
+        return buffer.data().data()
 
 class RegionSelector(QWidget):
     """Widget for selecting screen regions"""
@@ -552,6 +574,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
+        self.setWindowIcon(QIcon("xian.png"))
         self.ollama_api = OllamaAPI()
         self.translation_worker = TranslationWorker(self.ollama_api)
         self.api_status_worker = APIStatusWorker(self.ollama_api)
@@ -697,7 +720,7 @@ class MainWindow(QMainWindow):
         api_group = QGroupBox("Ollama API")
         api_layout = QFormLayout(api_group)
 
-        self.api_url_edit = QLineEdit("http://192.168.0.162:11434")
+        self.api_url_edit = QLineEdit("http://localhost:11434")
         self.api_model_edit = QComboBox()
         self.api_model_edit.setEditable(True)
         self.api_model_edit.addItem("qwen3-vl:8b-instruct")
@@ -907,7 +930,7 @@ class MainWindow(QMainWindow):
 
     def load_settings(self):
         """Load application settings"""
-        self.api_url_edit.setText(self.settings.value("api_url", "http://192.168.0.162:11434"))
+        self.api_url_edit.setText(self.settings.value("api_url", "http://localhost:11434"))
         self.api_model_edit.setCurrentText(self.settings.value("api_model", "qwen3-vl:8b-instruct"))
         self.source_lang_combo.setCurrentText(self.settings.value("source_lang", "auto"))
         self.target_lang_combo.setCurrentText(self.settings.value("target_lang", "English"))
@@ -961,6 +984,7 @@ class MainWindow(QMainWindow):
 def main():
     """Main application entry point"""
     app = QApplication(sys.argv)
+    app.setWindowIcon(QIcon("xian.png"))
 
     # Check for required dependencies
     if not SCREENSHOT_AVAILABLE:
