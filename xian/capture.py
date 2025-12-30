@@ -1,59 +1,17 @@
-import os
-import shutil
-import subprocess
 import hashlib
 from typing import Optional, Tuple
 from PyQt6.QtGui import QImage, QGuiApplication
-from PyQt6.QtCore import QBuffer, QIODevice, Qt
+from PyQt6.QtCore import QBuffer, QIODevice, Qt, QRect
 
-try:
-    # Try to import screenshot capability for Wayland
-    import subprocess
-    SCREENSHOT_AVAILABLE = True
-except ImportError:
-    SCREENSHOT_AVAILABLE = False
+SCREENSHOT_AVAILABLE = True
 
 class ScreenCapture:
-    """Handle screen capture on Wayland"""
+    """Handle screen capture using PyQt6"""
 
     @staticmethod
     def capture_screen() -> Optional[bytes]:
-        """Capture entire screen using available tools (grim, spectacle, or PyQt fallback)"""
-        temp_file = '/tmp/xian_screenshot.png'
+        """Capture entire screen using PyQt fallback"""
         try:
-            # Ensure fresh capture
-            if os.path.exists(temp_file):
-                os.remove(temp_file)
-
-            # 1. Try grim (Native Wayland)
-            if shutil.which('grim'):
-                result = subprocess.run([
-                    'grim', temp_file
-                ], capture_output=True, timeout=5)
-                
-                if result.returncode == 0 and os.path.exists(temp_file):
-                    with open(temp_file, 'rb') as f:
-                        data = f.read()
-                        if len(data) > 0:
-                            print(f"Captured screen using grim: {len(data)} bytes")
-                            return data
-
-            # 2. Try spectacle (KDE's tool)
-            if shutil.which('spectacle'):
-                # Try spectacle background mode
-                result = subprocess.run([
-                    'spectacle', '-b', '-n', '-o', temp_file
-                ], capture_output=True, timeout=5)
-
-                if result.returncode == 0 and os.path.exists(temp_file):
-                    with open(temp_file, 'rb') as f:
-                        data = f.read()
-                        if len(data) > 0:
-                            print(f"Captured screen using spectacle: {len(data)} bytes")
-                            return data
-
-            # 3. Last resort: PyQt fallback (may not work perfectly on all Wayland compositors)
-            print("No native screenshot tools found, trying PyQt fallback...")
             screen = QGuiApplication.primaryScreen()
             if screen:
                 pixmap = screen.grabWindow(0)
@@ -61,7 +19,6 @@ class ScreenCapture:
                 buffer.open(QIODevice.OpenModeFlag.WriteOnly)
                 pixmap.save(buffer, "PNG")
                 data = bytes(buffer.buffer())
-                print(f"Captured screen using PyQt fallback: {len(data)} bytes")
                 return data
 
         except Exception as e:
@@ -71,56 +28,62 @@ class ScreenCapture:
 
     @staticmethod
     def capture_region(x: int, y: int, width: int, height: int) -> Optional[bytes]:
-        """Capture specific screen region using available tools"""
-        temp_file = '/tmp/xian_region.png'
+        """Capture specific screen region"""
         try:
-            if os.path.exists(temp_file):
-                os.remove(temp_file)
-
-            # 1. Try grim for region capture
-            if shutil.which('grim'):
-                result = subprocess.run([
-                    'grim', '-g', f'{x},{y} {width}x{height}', temp_file
-                ], capture_output=True, timeout=5)
-
-                if result.returncode == 0 and os.path.exists(temp_file):
-                    with open(temp_file, 'rb') as f:
-                        data = f.read()
-                        if len(data) > 0:
-                            print(f"Captured region ({width}x{height}) using grim: {len(data)} bytes")
-                            return data
-
-            # 2. Try spectacle for region capture
-            if shutil.which('spectacle'):
-                result = subprocess.run([
-                    'spectacle', '-b', '-n', '-r', '-o', temp_file
-                ], capture_output=True, timeout=5)
-                # Note: spectacle -r usually requires user interaction unless configured.
-                # KDE/Wayland security often prevents non-interactive region capture.
+            full_data = ScreenCapture.capture_screen()
+            if not full_data:
+                return None
                 
-                if result.returncode == 0 and os.path.exists(temp_file):
-                    with open(temp_file, 'rb') as f:
-                        data = f.read()
-                        if len(data) > 0:
-                            print(f"Captured region using spectacle: {len(data)} bytes")
-                            return data
-
-            # 3. PyQt fallback for region
-            print("Using PyQt fallback for region capture...")
-            screen = QGuiApplication.primaryScreen()
-            if screen:
-                pixmap = screen.grabWindow(0, x, y, width, height)
-                buffer = QBuffer()
-                buffer.open(QIODevice.OpenModeFlag.WriteOnly)
-                pixmap.save(buffer, "PNG")
-                data = bytes(buffer.buffer())
-                print(f"Captured region ({width}x{height}) using PyQt fallback: {len(data)} bytes")
-                return data
+            image = QImage.fromData(full_data)
+            if image.isNull():
+                return None
+                
+            # Crop to region
+            rect = QRect(x, y, width, height)
+            # Ensure rect is within image bounds
+            rect = rect.intersected(image.rect())
+            
+            if rect.isEmpty():
+                print(f"Warning: Requested region {x},{y} {width}x{height} is outside screen bounds")
+                return None
+                
+            cropped = image.copy(rect)
+            
+            # Convert back to bytes
+            buffer = QBuffer()
+            buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+            cropped.save(buffer, "PNG")
+            data = bytes(buffer.buffer())
+            
+            return data
 
         except Exception as e:
             print(f"Region capture error: {e}")
 
         return None
+
+    @staticmethod
+    def preprocess_image(image_data: bytes) -> bytes:
+        """Enhance image for better OCR/translation results"""
+        image = QImage.fromData(image_data)
+        if image.isNull():
+            return image_data
+
+        # 1. Convert to Grayscale to simplify and improve contrast focus
+        image = image.convertToFormat(QImage.Format.Format_Grayscale8)
+
+        # 2. Simple contrast enhancement: Normalize
+        # We find the min/max pixel values and stretch the range
+        # Note: In a real app we might use something like histogram equalization, 
+        # but for VLMs, clear grayscale with good contrast is often enough.
+        
+        # This is a basic way to "normalize" using QImage if we don't want OpenCV
+        # For efficiency, we just return the grayscale image for now which already helps OCR
+        
+        buffer = QBuffer()
+        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+        image.save(buffer, "PNG")
+        return bytes(buffer.buffer())
 
     @staticmethod
     def compress_image(image_data: bytes, quality: int = 50) -> Tuple[bytes, int, int]:
@@ -143,10 +106,14 @@ class ScreenCapture:
         return bytes(buffer.buffer()), image.width(), image.height()
 
     @staticmethod
-    def calculate_hash(image_data: bytes) -> str:
+    def calculate_hash(image_input) -> str:
         """Calculate a simple perceptual hash for change detection"""
-        image = QImage.fromData(image_data)
-        if image.isNull():
+        if isinstance(image_input, bytes):
+            image = QImage.fromData(image_input)
+        else:
+            image = image_input
+
+        if not image or image.isNull():
             return ""
         
         # Downsample to a very small size to ignore minor noise/flicker
