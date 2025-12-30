@@ -1,20 +1,26 @@
 from typing import List
-from PyQt6.QtCore import QThread, pyqtSignal, QRect, QPoint, QSize, QBuffer, QIODevice, Qt
-from PyQt6.QtGui import QImage, QPainter, QColor
+from PyQt6.QtCore import QThread, pyqtSignal, QRect, QPoint, QSize, QBuffer, QIODevice, Qt, QThreadPool, QRunnable
+from PyQt6.QtGui import QImage, QPainter, QColor, QCursor, QGuiApplication
 from .models import TranslationMode, TranslationRegion, TranslationResult
-from .api import OllamaAPI
+from .api import TransformersTranslator
 from .capture import ScreenCapture
+
+try:
+    import easyocr
+except ImportError:
+    easyocr = None
 
 class TranslationWorker(QThread):
     """Worker thread for handling translations"""
 
-    translation_ready = pyqtSignal(list)
+    translation_ready = pyqtSignal(list, object) # list of results, optional QRect of the updated area
+    status_update = pyqtSignal(str) # Status message for the UI
     request_hide_overlay = pyqtSignal()
     request_show_overlay = pyqtSignal()
 
-    def __init__(self, ollama_api: OllamaAPI):
+    def __init__(self, translator: TransformersTranslator):
         super().__init__()
-        self.ollama_api = ollama_api
+        self.translator = translator
         self.running = False
         self.mode = TranslationMode.FULL_SCREEN
         self.regions = []
@@ -22,8 +28,24 @@ class TranslationWorker(QThread):
         self.target_lang = "English"
         self.interval = 2000  # ms
         self.redaction_margin = 15 # Default margin for redaction
-        self.last_hashes = {}  # Map of region name (or "full") to last hash
+        self.last_hashes = {}  # Map of region key or "full" to last hash
         self.active_geometries = []  # Current bubble geometries for redaction
+        self.thread_pool = QThreadPool()
+        self.thread_pool.setMaxThreadCount(4) # Sane number of threads
+        self.ocr_reader = None
+        self._init_ocr()
+
+    def _init_ocr(self):
+        """Initialize EasyOCR reader"""
+        if easyocr and not self.ocr_reader:
+            try:
+                # Initialize with English and Chinese/Japanese/Korean as common game languages
+                # In a real app we might want to configure this
+                print("Initializing EasyOCR...")
+                self.ocr_reader = easyocr.Reader(['en', 'ch_sim', 'ja', 'ko'])
+                print("EasyOCR initialized")
+            except Exception as e:
+                print(f"Failed to initialize EasyOCR: {e}")
 
     def set_active_geometries(self, geometries: List[QRect]):
         """Set geometries to be redacted from the capture"""
@@ -45,6 +67,7 @@ class TranslationWorker(QThread):
     def stop_translation(self):
         """Stop translation process"""
         self.running = False
+        self.thread_pool.clear() # Cancel pending tasks
         self.quit()
         # Non-blocking wait if called from main thread to prevent UI lag
         if QThread.currentThread() == self.thread():
@@ -59,37 +82,107 @@ class TranslationWorker(QThread):
     def run(self):
         from PyQt6.QtCore import QElapsedTimer
         timer = QElapsedTimer()
+
         while self.running:
             timer.start()
+            # Request latest geometries for redaction
+            self.request_hide_overlay.emit()
+            
             try:
-                if self.mode == TranslationMode.FULL_SCREEN:
-                    self._translate_full_screen()
-                else:
-                    self._translate_regions()
+                # Use EasyOCR for all modes as requested
+                self._translate_with_ocr()
 
-                # Calculate remaining sleep time to maintain the interval
+                # Calculate remaining sleep time
                 elapsed = timer.elapsed()
-                remaining = self.interval - elapsed
+                # Use 1 second interval as requested
+                target_interval = 1000
+                remaining = target_interval - elapsed
                 
-                # Check running flag frequently during sleep to be responsive to 'stop'
                 if remaining > 0:
-                    for _ in range(int(remaining // 100)):
-                        if not self.running: break
-                        self.msleep(100)
-                    if self.running:
-                        self.msleep(int(remaining % 100))
+                    self.msleep(int(remaining))
                 else:
-                    # Give time for GUI thread and prevent flooding
-                    self.msleep(100)
+                    self.msleep(1) # Minimal sleep to prevent CPU hogging
 
             except Exception as e:
                 print(f"Translation worker error: {e}")
-                # Check running flag during error sleep
-                for _ in range(50):
-                    if not self.running: break
-                    self.msleep(100)
+                self.msleep(1000)
         
         print("Translation worker thread stopped")
+
+    def _translate_with_ocr(self):
+        """Capture screen, perform OCR with EasyOCR, and translate via Transformers"""
+        if not self.ocr_reader:
+            self.status_update.emit("EasyOCR not available")
+            return
+
+        self.status_update.emit("Capturing screen...")
+        image_data = ScreenCapture.capture_screen()
+        if not image_data or not self.running:
+            return
+
+        # Redact existing translations to avoid OCR-ing them
+        if self.active_geometries:
+            image = QImage.fromData(image_data)
+            if not image.isNull():
+                image = self._redact_image(image, self.active_geometries)
+                buffer = QBuffer()
+                buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+                image.save(buffer, "PNG")
+                image_data = bytes(buffer.buffer())
+
+        # Use image hash to avoid redundant OCR if nothing changed
+        image_hash = ScreenCapture.calculate_hash(image_data)
+        if image_hash == self.last_hashes.get("full"):
+            return
+        self.last_hashes["full"] = image_hash
+
+        self.status_update.emit("Performing OCR...")
+        try:
+            # EasyOCR can take bytes
+            results = self.ocr_reader.readtext(image_data)
+            
+            if not results:
+                self.status_update.emit("No text detected")
+                self.translation_ready.emit([], None)
+                return
+
+            # Format results for translation
+            ocr_regions = []
+            for (bbox, text, prob) in results:
+                if prob < 0.2: continue # Filter low confidence
+                
+                # bbox is [[x0, y0], [x1, y1], [x2, y2], [x3, y3]]
+                x = min(p[0] for p in bbox)
+                y = min(p[1] for p in bbox)
+                w = max(p[0] for p in bbox) - x
+                h = max(p[1] for p in bbox) - y
+                
+                ocr_regions.append({
+                    "text": text,
+                    "x": x,
+                    "y": y,
+                    "width": w,
+                    "height": h
+                })
+
+            if not ocr_regions:
+                self.translation_ready.emit([], None)
+                return
+
+            self.status_update.emit(f"Translating {len(ocr_regions)} regions...")
+            translated_results = self.translator.translate_text_regions(
+                ocr_regions, self.source_lang, self.target_lang
+            )
+            
+            if translated_results:
+                self.translation_ready.emit(translated_results, None)
+                self.status_update.emit("Translation complete")
+            else:
+                self.status_update.emit("Translation failed")
+
+        except Exception as e:
+            print(f"OCR translation error: {e}")
+            self.status_update.emit(f"OCR Error: {e}")
 
     def _redact_image(self, image: QImage, geometries: List[QRect], offset: QPoint = QPoint(0, 0)) -> QImage:
         """Draw black boxes over existing translation areas"""
@@ -109,173 +202,24 @@ class TranslationWorker(QThread):
             # Adjust rect by offset (for regions, rect is in screen coords)
             adj_rect = rect.translated(-offset)
             # Draw box to ensure text is fully covered
-            # Add margin to ensure edge cases are covered (especially scaling/aliasing)
             margin = self.redaction_margin
             adj_rect.adjust(-margin, -margin, margin, margin)
             painter.drawRect(adj_rect)
             
         painter.end()
-        
         return redacted
 
-    def _translate_full_screen(self):
-        """Handle full screen translation"""
-        # We no longer hide/show the overlay for every capture because we use redaction.
-        # This prevents flickering and Wayland visibility issues.
-        self.request_hide_overlay.emit() # This signal now just updates geometries
-        
-        # Give GUI thread time to update geometries and process any pending events
-        for _ in range(5):
-             self.msleep(20)
-             if not self.running: return
-        
-        image_data = ScreenCapture.capture_screen()
-        if not self.running: return
-        
-        if image_data:
-            # Load as QImage for redaction
-            image = QImage.fromData(image_data)
-            if image.isNull():
-                print("Error: Captured image is null")
-                return
-                
-            # Redact existing translations
-            if self.active_geometries:
-                print(f"Redacting {len(self.active_geometries)} bubbles from capture")
-            image = self._redact_image(image, self.active_geometries)
-            
-            # Convert back to bytes for hashing and compression
-            buffer = QBuffer()
-            buffer.open(QIODevice.OpenModeFlag.ReadWrite)
-            image.save(buffer, "PNG")
-            redacted_data = bytes(buffer.buffer())
-
-            # Change detection on REDACTED image
-            current_hash = ScreenCapture.calculate_hash(redacted_data)
-            if self.last_hashes.get("full") == current_hash:
-                # No change, skip API
-                return
-            
-            # Get original size for scaling back
-            orig_size = image.size()
-            
-            # Compress image before sending to API (50% quality)
-            compressed_data, scaled_w, scaled_h = ScreenCapture.compress_image(redacted_data, quality=50)
-            scaled_size = QSize(scaled_w, scaled_h)
-            
-            print(f"Sending full screen to API ({orig_size.width()}x{orig_size.height()})")
-            results = self.ollama_api.translate_image(
-                compressed_data, self.source_lang, self.target_lang, self.mode,
-                original_size=orig_size, scaled_size=scaled_size
-            )
-            
-            if not self.running: return
-
-            # Update hash ONLY after a successful API call attempt
-            self.last_hashes["full"] = current_hash
-            
-            if results:
-                self.translation_ready.emit(results)
-            else:
-                print("API returned no new translations")
-        else:
-            print("Error: Failed to capture screen")
-
-    def _translate_regions(self):
-        """Handle region-based translation"""
-        self.request_hide_overlay.emit()
-        for _ in range(5):
-             self.msleep(20)
-             if not self.running: return
-        
-        # Capture all regions first
-        captured_images = []
-        for region in self.regions:
-            if not self.running: break
-            if not region.enabled:
-                continue
-            
-            image_data = ScreenCapture.capture_region(
-                region.x, region.y, region.width, region.height
-            )
-            if not self.running: break
-            if image_data:
-                # Load as QImage for redaction
-                image = QImage.fromData(image_data)
-                if image.isNull():
-                    continue
-                
-                # Redact existing translations in this region
-                # Bubble geometries are in screen coordinates
-                region_rect = QRect(region.x, region.y, region.width, region.height)
-                # Filter geometries that intersect this region
-                intersecting = [g for g in self.active_geometries if region_rect.intersects(g)]
-                image = self._redact_image(image, intersecting, offset=QPoint(region.x, region.y))
-                
-                # Convert back to bytes
-                buffer = QBuffer()
-                buffer.open(QIODevice.OpenModeFlag.ReadWrite)
-                image.save(buffer, "PNG")
-                redacted_data = bytes(buffer.buffer())
-
-                # Change detection per region on REDACTED image
-                current_hash = ScreenCapture.calculate_hash(redacted_data)
-                region_key = f"region_{region.x}_{region.y}_{region.width}_{region.height}"
-                if self.last_hashes.get(region_key) == current_hash:
-                    continue
-                
-                captured_images.append((region, redacted_data, current_hash, region_key))
-        
-        if not self.running: return
-        
-        if not captured_images:
-            return
-
-        all_results = []
-        for region, image_data, current_hash, region_key in captured_images:
-            if not self.running: break
-            original_image = QImage.fromData(image_data)
-            orig_size = original_image.size()
-            
-            # Compress image before sending to API (50% quality)
-            compressed_data, scaled_w, scaled_h = ScreenCapture.compress_image(image_data, quality=50)
-            scaled_size = QSize(scaled_w, scaled_h)
-            
-            print(f"Sending region '{region.name}' to API ({orig_size.width()}x{orig_size.height()})")
-            results = self.ollama_api.translate_image(
-                compressed_data, self.source_lang, self.target_lang, TranslationMode.REGION_SELECT,
-                original_size=orig_size, scaled_size=scaled_size
-            )
-            
-            if not self.running: break
-
-            # Update hash after API call
-            self.last_hashes[region_key] = current_hash
-
-            # Adjust coordinates for region
-            if results:
-                print(f"Region '{region.name}' returned {len(results)} results")
-                for result in results:
-                    result.x += region.x
-                    result.y += region.y
-                    all_results.append(result)
-            else:
-                print(f"Region '{region.name}' returned no new translations")
-
-        if all_results and self.running:
-            self.translation_ready.emit(all_results)
-
-class APIStatusWorker(QThread):
-    """Worker thread for checking API status and fetching models"""
+class TranslatorStatusWorker(QThread):
+    """Worker thread for checking translator status and fetching models"""
     status_changed = pyqtSignal(bool, list)
 
-    def __init__(self, ollama_api: OllamaAPI):
+    def __init__(self, translator: TransformersTranslator):
         super().__init__()
-        self.ollama_api = ollama_api
+        self.translator = translator
 
     def run(self):
-        is_available = self.ollama_api.is_available()
+        is_available = self.translator.is_available()
         models = []
         if is_available:
-            models = self.ollama_api.get_available_models()
+            models = self.translator.get_available_models()
         self.status_changed.emit(is_available, models)
