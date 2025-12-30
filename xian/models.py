@@ -19,8 +19,8 @@ class TranslationRegion:
 class TranslationResult:
     """Result from translation API"""
     translated_text: str
-    x: int
-    y: int
-    width: int
-    height: int
+    x: float
+    y: float
+    width: float
+    height: float
     confidence: float = 1.0
