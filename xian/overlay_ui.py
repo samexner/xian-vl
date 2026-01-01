@@ -82,11 +82,11 @@ class OverlayControlPanel(QWidget):
         logo_label = QLabel("Xian")
         logo_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #4CAF50;")
         header.addWidget(logo_label)
-        
+
         self.status_label = QLabel("Ready")
         self.status_label.setStyleSheet("color: #aaa; font-size: 11px; margin-left: 10px;")
         header.addWidget(self.status_label)
-        
+
         header.addStretch()
 
         self.start_btn = QPushButton("Start")
@@ -118,7 +118,7 @@ class OverlayControlPanel(QWidget):
         log_container = QWidget()
         log_layout = QVBoxLayout(log_container)
         log_layout.setContentsMargins(0, 5, 0, 0)
-        
+
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setMaximumBlockCount(500)
@@ -126,26 +126,26 @@ class OverlayControlPanel(QWidget):
             "color: #ddd; background: rgba(0,0,0,80); border: 1px solid rgba(255,255,255,20); font-family: monospace; font-size: 10px;"
         )
         log_layout.addWidget(self.log_view)
-        
+
         log_footer = QHBoxLayout()
         self.clear_btn = QPushButton("Clear Logs")
         self.clear_btn.setStyleSheet("font-size: 10px;")
         self.clear_btn.clicked.connect(self.log_view.clear)
         log_footer.addWidget(self.clear_btn)
-        
+
         self.clear_trans_btn = QPushButton("Clear Bubbles")
         self.clear_trans_btn.setStyleSheet("font-size: 10px;")
         self.clear_trans_btn.clicked.connect(self.request_clear.emit)
         log_footer.addWidget(self.clear_trans_btn)
-        
+
         self.toggle_overlay_btn = QPushButton("Hide Overlay")
         self.toggle_overlay_btn.setStyleSheet("font-size: 10px;")
         self.toggle_overlay_btn.clicked.connect(self._toggle_overlay)
         log_footer.addWidget(self.toggle_overlay_btn)
-        
+
         log_footer.addStretch()
         log_layout.addLayout(log_footer)
-        
+
         self.stack.addWidget(log_container)
 
         # Page 2: Settings
@@ -153,7 +153,7 @@ class OverlayControlPanel(QWidget):
         settings_scroll = QScrollArea()
         settings_scroll.setWidgetResizable(True)
         settings_scroll.setStyleSheet("background: transparent; border: none;")
-        
+
         settings_content = QWidget()
         settings_content.setStyleSheet("background: transparent;")
         settings_layout = QFormLayout(settings_content)
@@ -170,7 +170,7 @@ class OverlayControlPanel(QWidget):
         self.source_lang_combo.addItems(["auto", "Japanese", "Korean", "Chinese", "Spanish", "French", "English"])
         self.target_lang_combo = QComboBox()
         self.target_lang_combo.addItems(["English", "Japanese", "Korean", "Chinese", "Spanish", "French"])
-        
+
         settings_layout.addRow("Source:", self.source_lang_combo)
         settings_layout.addRow("Target:", self.target_lang_combo)
 
@@ -210,6 +210,10 @@ class OverlayControlPanel(QWidget):
 
         self.show_full_check = QCheckBox("Show full text (expanded) by default")
         settings_layout.addRow("", self.show_full_check)
+
+        # Link/anchor visualization
+        self.show_link_check = QCheckBox("Show link to source when bubble is clicked")
+        settings_layout.addRow("", self.show_link_check)
 
         self.reset_btn = QPushButton("Reset All Settings")
         self.reset_btn.setStyleSheet("background-color: rgba(183, 28, 28, 150); font-size: 11px; margin-top: 10px;")
@@ -257,6 +261,7 @@ class OverlayControlPanel(QWidget):
         self.debug_check.toggled.connect(self._save_panel_settings)
         self.combine_check.toggled.connect(self._save_panel_settings)
         self.show_full_check.toggled.connect(self._save_panel_settings)
+        self.show_link_check.toggled.connect(self._save_panel_settings)
 
     def _toggle_settings(self, checked):
         self.stack.setCurrentIndex(1 if checked else 0)
@@ -264,7 +269,8 @@ class OverlayControlPanel(QWidget):
 
     def _load_panel_settings(self):
         s = self.settings
-        self.mode_combo.setCurrentText("Full Screen" if s.value("translation_mode", "full_screen") == "full_screen" else "Region Selection")
+        self.mode_combo.setCurrentText(
+            "Full Screen" if s.value("translation_mode", "full_screen") == "full_screen" else "Region Selection")
         self.source_lang_combo.setCurrentText(s.value("source_lang", "auto"))
         self.target_lang_combo.setCurrentText(s.value("target_lang", "English"))
         self.model_combo.setCurrentText(s.value("model_name", "facebook/nllb-200-distilled-600M"))
@@ -274,11 +280,13 @@ class OverlayControlPanel(QWidget):
         self.debug_check.setChecked(s.value("debug_mode", "false") == "true")
         self.combine_check.setChecked(s.value("combine_paragraphs", "true") == "true")
         self.show_full_check.setChecked(s.value("show_full_text", "true") == "true")
+        self.show_link_check.setChecked(s.value("show_link_on_click", "false") == "true")
 
     def _save_panel_settings(self):
         self.apply_opacity(self.opacity_slider.value())
         s = self.settings
-        s.setValue("translation_mode", "full_screen" if self.mode_combo.currentText() == "Full Screen" else "region_select")
+        s.setValue("translation_mode",
+                   "full_screen" if self.mode_combo.currentText() == "Full Screen" else "region_select")
         s.setValue("source_lang", self.source_lang_combo.currentText())
         s.setValue("target_lang", self.target_lang_combo.currentText())
         s.setValue("model_name", self.model_combo.currentText())
@@ -288,6 +296,7 @@ class OverlayControlPanel(QWidget):
         s.setValue("debug_mode", "true" if self.debug_check.isChecked() else "false")
         s.setValue("combine_paragraphs", "true" if self.combine_check.isChecked() else "false")
         s.setValue("show_full_text", "true" if self.show_full_check.isChecked() else "false")
+        s.setValue("show_link_on_click", "true" if self.show_link_check.isChecked() else "false")
         self.settings_changed.emit()
 
     def set_running(self, running: bool):
@@ -331,12 +340,12 @@ class OverlayControlPanel(QWidget):
         if self.dragging:
             new_pos = self.pos() + event.position().toPoint() - self.drag_start_pos
             self.move(new_pos)
-            
+
             # Update mask of the parent overlay window
             parent = self.parentWidget()
             if parent and hasattr(parent, 'update_mask_during_drag'):
                 parent.update_mask_during_drag()
-            
+
             event.accept()
 
     def mouseReleaseEvent(self, event: QMouseEvent):
@@ -391,54 +400,151 @@ class OverlayControlPanel(QWidget):
         """
         )
 
+
 class OverlayWindow(QWidget):
     """Full-screen transparent container for bubbles to fix Wayland positioning"""
+
     def __init__(self):
         super().__init__()
         # On some Wayland compositors, keeping a window always-on-top requires
         # both WindowStaysOnTopHint and Tool flags, plus periodic raise_ calls.
         flags = (
-            Qt.WindowType.Window
-            | Qt.WindowType.Tool
-            | Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.NoDropShadowWindowHint
+                Qt.WindowType.Window
+                | Qt.WindowType.Tool
+                | Qt.WindowType.FramelessWindowHint
+                | Qt.WindowType.WindowStaysOnTopHint
+                | Qt.WindowType.NoDropShadowWindowHint
         )
 
         self.setWindowFlags(flags)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-        
+
         # Cover the entire virtual desktop to fix Wayland positioning issues
         total_geo = QRect()
         for screen in QGuiApplication.screens():
             total_geo = total_geo.united(screen.geometry())
-        
+
         self.setGeometry(total_geo)
         # Initial mask is empty so it's click-through
         self.setMask(QRegion())
         self.show()
 
     def paintEvent(self, event: QPaintEvent):
-        """Ensure the background is always transparent"""
+        """Transparent background, plus optional link rendering between bubbles and source rects."""
         painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.fillRect(event.rect(), Qt.GlobalColor.transparent)
+
+        # Determine if link visualization is enabled via the control panel
+        show_links_enabled = False
+        try:
+            panels = self.findChildren(OverlayControlPanel)
+            if panels:
+                panel = panels[0]
+                show_links_enabled = panel.show_link_check.isChecked()
+        except Exception:
+            show_links_enabled = False
+
+        if show_links_enabled:
+            try:
+                # Draw connectors for bubbles that requested it
+                bubbles = self.findChildren(TranslationBubble)
+                for b in bubbles:
+                    if sip.isdeleted(b) or not b.isVisible():
+                        continue
+                    if not getattr(b, "show_link", False):
+                        continue
+
+                    # Bubble anchor: center of its geometry
+                    b_rect = b.geometry()
+                    bubble_center = b_rect.center()
+
+                    # Source rect in overlay coordinates
+                    r = b.result
+                    src_rect = QRect(int(r.x), int(r.y), int(r.width), int(r.height))
+
+                    # Draw highlighted source rectangle
+                    highlight_color = QColor(76, 175, 80, 140)  # greenish
+                    border_color = QColor(76, 175, 80, 220)
+                    painter.setBrush(highlight_color)
+                    painter.setPen(border_color)
+                    painter.drawRoundedRect(src_rect, 6, 6)
+
+                    # Draw a connector line from bubble center to source rect center
+                    src_center = src_rect.center()
+                    pen = painter.pen()
+                    pen.setWidth(3)
+                    pen.setColor(border_color)
+                    painter.setPen(pen)
+                    painter.drawLine(bubble_center, src_center)
+
+                    # Subtle glow by overdrawing with alpha
+                    glow_pen = painter.pen()
+                    glow_pen.setWidth(7)
+                    glow_pen.setColor(QColor(76, 175, 80, 80))
+                    painter.setPen(glow_pen)
+                    painter.drawLine(bubble_center, src_center)
+
+                    # Reset pen for next iteration
+                    painter.setPen(Qt.PenStyle.NoPen)
+            except Exception:
+                pass
+
         painter.end()
 
     def update_mask_during_drag(self):
         """Recalculate mask from all children during a drag operation"""
         mask = QRegion()
-        # Iterate over all child widgets (the bubbles)
+        # Base mask: all visible child widgets (bubbles + control panel)
         for child in self.findChildren(QWidget):
             if child.isVisible() and not child.isWindow():
                 mask += child.geometry()
+
+        # If link visualization is enabled, include source rects and a thin band along connectors
+        show_links_enabled = False
+        try:
+            panels = self.findChildren(OverlayControlPanel)
+            if panels:
+                show_links_enabled = panels[0].show_link_check.isChecked()
+        except Exception:
+            show_links_enabled = False
+
+        if show_links_enabled:
+            try:
+                bubbles = self.findChildren(TranslationBubble)
+                for b in bubbles:
+                    if sip.isdeleted(b) or not b.isVisible():
+                        continue
+                    if not getattr(b, "show_link", False):
+                        continue
+                    r = b.result
+                    src_rect = QRect(int(r.x), int(r.y), int(r.width), int(r.height))
+                    mask += src_rect
+
+                    # Add a thin series of rectangles along the line from bubble center to src center
+                    b_center = b.geometry().center()
+                    s_center = src_rect.center()
+                    dx = s_center.x() - b_center.x()
+                    dy = s_center.y() - b_center.y()
+                    steps = max(1, int((abs(dx) + abs(dy)) / 30))
+                    for i in range(1, steps):
+                        t = i / steps
+                        x = int(b_center.x() + dx * t)
+                        y = int(b_center.y() + dy * t)
+                        mask += QRect(x - 4, y - 4, 8, 8)
+            except Exception:
+                pass
         self.setMask(mask)
         self.update()
 
+
 class TranslationBubble(QWidget):
     """Translation bubble, now a child of OverlayWindow for reliable positioning"""
-    def __init__(self, result: TranslationResult, opacity: int, parent_overlay: QWidget = None, default_expanded: bool = False):
+
+    def __init__(self, result: TranslationResult, opacity: int, parent_overlay: QWidget = None,
+                 default_expanded: bool = False):
         super().__init__(parent_overlay)
         self.result = result
         self.opacity = opacity
@@ -446,20 +552,21 @@ class TranslationBubble(QWidget):
         self.expanded = bool(default_expanded)
         self.drag_start_pos = QPoint()
         self.press_pos = QPoint()
-        
+
         # Since it's a child widget, we don't need all the window flags
         # But we still want it to look like a bubble
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        
+
         self.setup_ui()
         # Respect default expansion state on creation
         self.stack.setCurrentIndex(1 if self.expanded else 0)
         self.update_geometry()
+        self.show_link = False  # toggled when clicked if feature enabled
 
     def setup_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 20, 10, 10)
-        
+
         # Close button
         self.close_btn = QPushButton("×", self)
         self.close_btn.setFixedSize(20, 20)
@@ -478,31 +585,31 @@ class TranslationBubble(QWidget):
             }}
         """)
         self.close_btn.clicked.connect(self.deleteLater)
-        
+
         self.stack = QStackedWidget()
-        
+
         # Collapsed view
         self.collapsed_label = QLabel()
         self.collapsed_label.setWordWrap(True)
         self.collapsed_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.collapsed_label.setStyleSheet("color: white; font-weight: bold; font-size: 14px; background: transparent;")
-        
+
         # Expanded view
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.scroll_area.setStyleSheet("background: transparent; border: none;")
-        
+
         self.expanded_label = QLabel()
         self.expanded_label.setWordWrap(True)
         self.expanded_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self.expanded_label.setStyleSheet("color: white; font-weight: bold; font-size: 14px; background: transparent;")
-        
+
         self.scroll_area.setWidget(self.expanded_label)
-        
+
         self.stack.addWidget(self.collapsed_label)
         self.stack.addWidget(self.scroll_area)
-        
+
         layout.addWidget(self.stack)
         self._update_text_displays()
 
@@ -522,7 +629,7 @@ class TranslationBubble(QWidget):
         # Calculate size based on text
         font = QFont("Arial", 12, QFont.Weight.Bold)
         metrics = QFontMetrics(font)
-        
+
         padding = 20
         if not self.expanded:
             text = self.collapsed_label.text()
@@ -534,55 +641,55 @@ class TranslationBubble(QWidget):
 
             measure_width_i = int(round(measure_width))
             content_width_i = max(1, measure_width_i - padding * 2)
-            
+
             text_rect = metrics.boundingRect(
-                                            QRect(0, 0, content_width_i, 1000), 
-                                            Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, 
-                                            text)
-            
+                QRect(0, 0, content_width_i, 1000),
+                Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
+                text)
+
             box_width = int(text_rect.width() + padding * 2)
             box_height = int(text_rect.height() + padding * 2 + 10)
         else:
             # Expanded mode size
             box_width = 400
             box_height = 250
-        
+
         # Apply min sizes
         box_width = max(box_width, 100)
         box_height = max(box_height, 40)
-        
+
         self.setFixedSize(box_width, box_height)
-        
+
         # Parent geometry (OverlayWindow covers screen(s))
         if self.parentWidget():
             parent_geo = self.parentWidget().geometry()
         else:
             parent_geo = QGuiApplication.primaryScreen().geometry()
-        
+
         # Center the bubble over the original text coordinates
-        # result.x/y are relative to the captured image. 
+        # result.x/y are relative to the captured image.
         # If capture was full desktop, and OverlayWindow covers full desktop, then
         # they are already in the correct coordinate space relative to OverlayWindow.
         target_x = self.result.x + (self.result.width - box_width) // 2
         target_y = self.result.y + (self.result.height - box_height) // 2
-        
+
         # Constraint to parent bounds
         x = max(parent_geo.left() + 10, min(target_x, parent_geo.right() - box_width - 10))
         y = max(parent_geo.top() + 10, min(target_y, parent_geo.bottom() - box_height - 10))
-        
+
         # When moving a child widget, it's relative to the parent's (0,0).
         # Since OverlayWindow covers the whole virtual desktop, we need to adjust
         # by the parent's top-left if it's not (0,0).
         rel_x = x - parent_geo.left()
         rel_y = y - parent_geo.top()
-        
+
         self.move(int(rel_x), int(rel_y))
 
     def toggle_expansion(self):
         self.expanded = not self.expanded
         self.stack.setCurrentIndex(1 if self.expanded else 0)
         self.update_geometry()
-        
+
         # Update mask because size changed
         parent = self.parentWidget()
         if parent and hasattr(parent, 'update_mask_during_drag'):
@@ -618,7 +725,7 @@ class TranslationBubble(QWidget):
     def paintEvent(self, event: QPaintEvent):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
+
         rect = self.rect()
         # Match the control panel look: slightly lighter by default + subtle border.
         # Opacity setting still influences the alpha, but we clamp so bubbles don't get overly dark.
@@ -650,11 +757,11 @@ class TranslationBubble(QWidget):
         if self.dragging:
             new_pos = self.pos() + event.position().toPoint() - self.drag_start_pos
             self.move(new_pos)
-            
+
             parent = self.parentWidget()
             if parent and hasattr(parent, 'update_mask_during_drag'):
                 parent.update_mask_during_drag()
-            
+
             event.accept()
 
     def mouseReleaseEvent(self, event: QMouseEvent):
@@ -662,13 +769,22 @@ class TranslationBubble(QWidget):
             # Check for click vs drag
             curr_pos = event.globalPosition().toPoint()
             if (curr_pos - self.press_pos).manhattanLength() < 5:
+                # Toggle expansion and link visualization on click
                 self.toggle_expansion()
+                self.show_link = not self.show_link
+                try:
+                    parent = self.parentWidget()
+                    if parent:
+                        parent.update()  # trigger overlay repaint for link drawing
+                except Exception:
+                    pass
         self.dragging = False
         event.accept()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.close_btn.move(self.width() - 25, 5)
+
 
 class TranslationOverlay(QObject):
     """Manager for TranslationBubble widgets using a full-screen container"""
@@ -678,7 +794,7 @@ class TranslationOverlay(QObject):
         self.bubbles = []
         self.parent_window = parent_window
         self.overlay_window = OverlayWindow()
-        
+
         # Parent the control panel to the overlay window for unification.
         self.control_panel = OverlayControlPanel(self.overlay_window)
 
@@ -690,7 +806,7 @@ class TranslationOverlay(QObject):
         self.control_panel.request_clear.connect(self.clear_translations)
         self.control_panel.request_hide_overlay.connect(self.hide_overlay_window)
         self.control_panel.request_show_overlay.connect(self.show_overlay_window)
-        
+
         # Ensure overlay window follows main window lifecycle
         if parent_window:
             parent_window.destroyed.connect(self.overlay_window.deleteLater)
@@ -801,44 +917,45 @@ class TranslationOverlay(QObject):
             # Do not auto-clear; keep existing bubbles until user clears them.
             logger.debug("No translations provided; preserving existing overlay contents")
             return
-            
+
         # Limit the number of input translations to prevent O(N^2) hangs
         if len(translations) > 50:
             logger.warning(f"Too many translations received ({len(translations)}), limiting to 50")
             translations = translations[:50]
-            
-        logger.info(f"Updating overlay with {len(translations)} results" + (f" in area {updated_area}" if updated_area else ""))
+
+        logger.info(
+            f"Updating overlay with {len(translations)} results" + (f" in area {updated_area}" if updated_area else ""))
         opacity = self.opacity
-        
+
         # Track which bubbles were matched/created in this update
         matched_bubble_ids = set()
-        
+
         # 1. Pre-process: Merge very close results from the API itself
         merged_results = []
         sorted_results = sorted(translations, key=lambda r: (r.y, r.x))
-        
+
         for res in sorted_results:
             found_group = False
             for existing in merged_results:
                 y_diff = abs(existing.y - res.y)
                 x_diff = res.x - (existing.x + existing.width)
-                
+
                 if y_diff < 20:
                     if res.translated_text.strip() == existing.translated_text.strip() and abs(x_diff) < 50:
                         found_group = True
                         break
-                    
+
                     if -20 < x_diff < 40:
                         if res.translated_text.strip().lower() not in existing.translated_text.lower():
                             existing.translated_text += " " + res.translated_text
-                        
+
                         new_right = max(existing.x + existing.width, res.x + res.width)
                         existing.width = new_right - existing.x
                         existing.height = max(existing.height, res.height)
                         existing.y = min(existing.y, res.y)
                         found_group = True
                         break
-            
+
             if not found_group:
                 from dataclasses import replace
                 merged_results.append(replace(res))
@@ -863,10 +980,12 @@ class TranslationOverlay(QObject):
                 for cl in clusters:
                     rect: QRect = cl["rect"]
                     # proximity thresholds
-                    vert_close = abs(res.y - (rect.y() + rect.height()/2)) < 28 or (rect.top()-30 <= res.y <= rect.bottom()+30)
+                    vert_close = abs(res.y - (rect.y() + rect.height() / 2)) < 28 or (
+                                rect.top() - 30 <= res.y <= rect.bottom() + 30)
                     # horizontal overlap check
                     res_rect = QRect(int(res.x), int(res.y), int(res.width), int(res.height))
-                    overlap = rect.intersects(res_rect) or (res_rect.left() <= rect.right()+20 and res_rect.right() >= rect.left()-20)
+                    overlap = rect.intersects(res_rect) or (
+                                res_rect.left() <= rect.right() + 20 and res_rect.right() >= rect.left() - 20)
                     if vert_close and overlap:
                         # add to cluster
                         cl["items"].append(res)
@@ -875,7 +994,8 @@ class TranslationOverlay(QObject):
                         placed = True
                         break
                 if not placed:
-                    clusters.append({"rect": QRect(int(res.x), int(res.y), int(res.width), int(res.height)), "items": [res]})
+                    clusters.append(
+                        {"rect": QRect(int(res.x), int(res.y), int(res.width), int(res.height)), "items": [res]})
 
             # For each cluster, order items top-to-bottom, left-to-right, and combine text
             clustered_results = []
@@ -910,49 +1030,50 @@ class TranslationOverlay(QObject):
             best_match = None
             highest_score = 0.0
             append_below_target = None
-            
+
             result_text_norm = result.translated_text.strip().lower()
             new_source_rect = QRect(int(result.x), int(result.y), int(result.width), int(result.height))
-            
+
             for bubble in self.bubbles:
                 if sip.isdeleted(bubble): continue
-                
+
                 score = 0.0
                 ex = bubble.result
                 ex_text_norm = ex.translated_text.strip().lower()
                 ex_source_rect = QRect(int(ex.x), int(ex.y), int(ex.width), int(ex.height))
-                
+
                 # Detect "append beneath" case: new text appears just below existing bubble's source
                 try:
                     vert_gap = new_source_rect.top() - ex_source_rect.bottom()
-                    horiz_overlap = min(ex_source_rect.right(), new_source_rect.right()) - max(ex_source_rect.left(), new_source_rect.left())
+                    horiz_overlap = min(ex_source_rect.right(), new_source_rect.right()) - max(ex_source_rect.left(),
+                                                                                               new_source_rect.left())
                     min_overlap = min(ex_source_rect.width(), new_source_rect.width()) * 0.3
                     if 0 <= vert_gap <= 36 and horiz_overlap >= min_overlap:
                         append_below_target = bubble
                 except Exception:
                     pass
-                
+
                 iou = 0.0
                 if ex_source_rect.intersects(new_source_rect):
                     inter = ex_source_rect.intersected(new_source_rect)
                     union = ex_source_rect.united(new_source_rect)
                     iou = (inter.width() * inter.height()) / (union.width() * union.height())
-                
+
                 if ex_text_norm == result_text_norm or ex_text_norm in result_text_norm or result_text_norm in ex_text_norm:
                     dist = abs(ex.x - result.x) + abs(ex.y - result.y)
                     if dist < 500:
                         score = 0.7 + (1.0 - min(1.0, dist / 500)) * 0.3
-                
+
                 score = max(score, iou)
-                
+
                 c_dist = (ex_source_rect.center() - new_source_rect.center()).manhattanLength()
                 if c_dist < 100:
                     score = max(score, (1.0 - c_dist / 100) * 0.6)
-                
+
                 if score > highest_score:
                     highest_score = score
                     best_match = bubble
-            
+
             # If we detected a likely line continuation beneath an existing bubble, append text
             if append_below_target and result.translated_text.strip():
                 try:
@@ -964,7 +1085,8 @@ class TranslationOverlay(QObject):
                     else:
                         base.translated_text = base.translated_text + "\n" + result.translated_text.strip()
                     # Expand source rect to include the new area below
-                    union_rect = QRect(int(base.x), int(base.y), int(base.width), int(base.height)).united(new_source_rect)
+                    union_rect = QRect(int(base.x), int(base.y), int(base.width), int(base.height)).united(
+                        new_source_rect)
                     base.x = float(union_rect.x())
                     base.y = float(union_rect.y())
                     base.width = float(union_rect.width())
@@ -989,7 +1111,7 @@ class TranslationOverlay(QObject):
                     self.bubbles.append(bubble)
                     matched_bubble_ids.add(id(bubble))
                     bubble.destroyed.connect(self._remove_bubble)
-                    
+
                     if self.parent_window and not sip.isdeleted(self.parent_window):
                         if self.parent_window.hide_overlay_checkbox.isChecked():
                             bubble.hide()
@@ -997,7 +1119,7 @@ class TranslationOverlay(QObject):
                             bubble.show()
                     else:
                         bubble.show()
-                        
+
                     try:
                         bubble.raise_()
                     except (RuntimeError, AttributeError):
@@ -1005,7 +1127,7 @@ class TranslationOverlay(QObject):
             except (RuntimeError, AttributeError) as e:
                 logger.error(f"Failed to create or show bubble: {e}")
                 continue
-        
+
         # 3. If an updated_area was provided, remove unmatched bubbles in that area
         if updated_area:
             for bubble in self.bubbles[:]:
@@ -1014,14 +1136,14 @@ class TranslationOverlay(QObject):
                     # Check if bubble's original text area is within the updated_area
                     r = bubble.result
                     bubble_source_rect = QRect(int(r.x), int(r.y), int(r.width), int(r.height))
-                    
+
                     # If the bubble's source area overlaps significantly with the updated area, remove it.
                     # We use intersection or center check. Intersection is safer.
                     # We also add a small margin to the updated_area to handle floating point issues or minor shifts.
                     margin_area = updated_area.adjusted(-5, -5, 5, 5)
                     if margin_area.intersects(bubble_source_rect) or margin_area.contains(bubble_source_rect.center()):
                         bubble.close()
-        
+
         # 4. Limit total number of bubbles to prevent performance issues/crashes
         MAX_BUBBLES = 50
         if len(self.bubbles) > MAX_BUBBLES:
@@ -1051,17 +1173,17 @@ class TranslationOverlay(QObject):
         """Update overlay window mask to allow click-through outside bubbles and control panel"""
         if sip.isdeleted(self.overlay_window):
             return
-            
+
         mask = QRegion()
         for bubble in self.bubbles:
             if not sip.isdeleted(bubble) and bubble.isVisible():
                 # We use the bubble's geometry which is relative to the overlay_window
                 mask += bubble.geometry()
-        
+
         # Include control panel in mask
         if not sip.isdeleted(self.control_panel) and self.control_panel.isVisible():
             mask += self.control_panel.geometry()
-            
+
         self.overlay_window.setMask(mask)
         self.overlay_window.update()
 
@@ -1182,26 +1304,26 @@ class TranslationOverlay(QObject):
                     # 1. Current bubble geometry (global coords)
                     top_left = b.mapToGlobal(QPoint(0, 0))
                     active_geoms.append(QRect(top_left, b.size()))
-                    
+
                     # 2. Original source text geometry
                     # These were already stored in image-relative coords during OCR.
                     # We need to translate them to global coords.
                     # Assuming the capture was the full virtual desktop:
                     r = b.result
-                    
+
                     # We'll use the overlay_window's origin to map back to global if needed,
                     # but actually r.x/y are relative to the capture.
                     # If we assume capture was at total_geo.topLeft(), then:
                     if not sip.isdeleted(self.overlay_window):
                         origin = self.overlay_window.geometry().topLeft()
                         active_geoms.append(QRect(
-                            int(r.x + origin.x()), 
-                            int(r.y + origin.y()), 
-                            int(r.width), 
+                            int(r.x + origin.x()),
+                            int(r.y + origin.y()),
+                            int(r.width),
                             int(r.height)
                         ))
                 except (RuntimeError, AttributeError):
                     pass
-        
+
         self.bubbles = [b for b in self.bubbles if not sip.isdeleted(b)]
         return active_geoms
