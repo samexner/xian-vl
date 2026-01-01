@@ -32,7 +32,7 @@ Xian is a PyQt6-based translation overlay designed for Linux Wayland (specifical
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/xian.git
+   git clone https://github.com/samexner/xian-vl.git
    cd xian
    ```
 
@@ -66,4 +66,7 @@ Xian is a PyQt6-based translation overlay designed for Linux Wayland (specifical
 
 ## License
 
-[Add License Information Here]
+GNU General Public License v3.0 - See LICENSE file for details.
+
+This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
