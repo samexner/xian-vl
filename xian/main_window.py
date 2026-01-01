@@ -1,4 +1,5 @@
 import json
+import logging
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QComboBox, QSpinBox, QCheckBox, QGroupBox, QSlider, QTabWidget,
@@ -8,11 +9,13 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, QRect, QSettings, pyqtSlot
 from PyQt6.QtGui import QIcon, QShortcut, QKeySequence
 
-from .api import OllamaAPI
-from .workers import TranslationWorker, APIStatusWorker
-from .overlay import TranslationOverlay
-from .selector import RegionSelector
+from .translation_service import TransformersTranslator
+from .translation_workers import TranslationWorker, TranslatorStatusWorker, ModelWarmupWorker
+from .overlay_ui import TranslationOverlay
+from .region_selector import RegionSelector
 from .models import TranslationMode, TranslationRegion
+
+logger = logging.getLogger(__name__)
 
 class MainWindow(QMainWindow):
     """Main application window"""
@@ -20,9 +23,10 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowIcon(QIcon("xian.png"))
-        self.ollama_api = OllamaAPI()
-        self.translation_worker = TranslationWorker(self.ollama_api)
-        self.api_status_worker = APIStatusWorker(self.ollama_api)
+        self.translator = TransformersTranslator()
+        self.translation_worker = TranslationWorker(self.translator)
+        self.translator_status_worker = TranslatorStatusWorker(self.translator)
+        self.model_warmup_worker = ModelWarmupWorker(self.translator)
         self.translation_overlay = TranslationOverlay(self)
         self.region_selector = None
         self.regions = []
@@ -39,47 +43,143 @@ class MainWindow(QMainWindow):
         self.connect_signals()
         self.load_settings()
 
+        # Launch directly into the overlay control panel settings and keep the legacy window hidden by default.
+        self.show_overlay_settings_panel()
+        self.hide()
+
         # Check API availability
         self.check_api_status()
 
+        self._pending_translation_start = None
+
     def setup_ui(self):
-        self.setWindowTitle("Xian - Video Game Translation Overlay")
-        self.setFixedSize(600, 500)
+        self.setWindowTitle("Xian - Unified Translation Interface")
+        self.setMinimumSize(600, 500)
+        self.resize(650, 550)
+        
+        # Modern dark theme for the main window
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #121212;
+            }
+            QWidget#CentralWidget {
+                background-color: #121212;
+            }
+            QGroupBox {
+                color: #4CAF50;
+                font-weight: bold;
+                border: 1px solid #333;
+                border-radius: 8px;
+                margin-top: 1.5ex;
+                padding: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                padding: 0 5px;
+            }
+            QLabel {
+                color: #e0e0e0;
+            }
+            QPushButton {
+                background-color: #333;
+                color: white;
+                border-radius: 4px;
+                padding: 6px 12px;
+                border: 1px solid #444;
+            }
+            QPushButton:hover {
+                background-color: #444;
+            }
+            QPushButton#StartBtn {
+                background-color: #2e7d32;
+                font-weight: bold;
+            }
+            QPushButton#StopBtn {
+                background-color: #c62828;
+                font-weight: bold;
+            }
+            QComboBox, QSpinBox, QLineEdit {
+                background-color: #1e1e1e;
+                color: white;
+                border: 1px solid #333;
+                border-radius: 4px;
+                padding: 4px;
+            }
+            QTabWidget::pane {
+                border: 1px solid #333;
+                background: #121212;
+            }
+            QTabBar::tab {
+                background: #1e1e1e;
+                color: #888;
+                padding: 8px 16px;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+            }
+            QTabBar::tab:selected {
+                background: #333;
+                color: white;
+            }
+            QListWidget {
+                background-color: #1e1e1e;
+                color: #ccc;
+                border: 1px solid #333;
+                border-radius: 4px;
+            }
+        """)
 
         central_widget = QWidget()
+        central_widget.setObjectName("CentralWidget")
         self.setCentralWidget(central_widget)
         layout = QVBoxLayout(central_widget)
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        # Header
+        header = QHBoxLayout()
+        title_label = QLabel("Xian")
+        title_label.setStyleSheet("font-size: 24px; font-weight: bold; color: #4CAF50;")
+        header.addWidget(title_label)
+        header.addStretch()
+        
+        self.header_status = QLabel("Ready")
+        self.header_status.setStyleSheet("color: #888;")
+        header.addWidget(self.header_status)
+        layout.addLayout(header)
 
         # Create tabs
-        tabs = QTabWidget()
-        layout.addWidget(tabs)
+        self.tabs = QTabWidget()
+        layout.addWidget(self.tabs)
 
         # General tab
         general_tab = self._create_general_tab()
-        tabs.addTab(general_tab, "General")
+        self.tabs.addTab(general_tab, "General")
 
         # Regions tab
         regions_tab = self._create_regions_tab()
-        tabs.addTab(regions_tab, "Regions")
+        self.tabs.addTab(regions_tab, "Regions")
 
         # Settings tab
         settings_tab = self._create_settings_tab()
-        tabs.addTab(settings_tab, "Settings")
+        self.tabs.addTab(settings_tab, "Advanced")
 
         # Control buttons
         controls_layout = QHBoxLayout()
 
         self.start_button = QPushButton("Start Translation")
+        self.start_button.setObjectName("StartBtn")
+        self.start_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.start_button.setMinimumHeight(40)
+        
         self.stop_button = QPushButton("Stop Translation")
+        self.stop_button.setObjectName("StopBtn")
+        self.stop_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.stop_button.setMinimumHeight(40)
         self.stop_button.setEnabled(False)
 
         controls_layout.addWidget(self.start_button)
         controls_layout.addWidget(self.stop_button)
-        controls_layout.addStretch()
-
-        self.status_label = QLabel("Ready")
-        controls_layout.addWidget(self.status_label)
-
+        
         layout.addLayout(controls_layout)
 
     def setup_tray_icon(self):
@@ -89,8 +189,8 @@ class MainWindow(QMainWindow):
         
         tray_menu = QMenu()
         
-        self.tray_show_action = tray_menu.addAction("Show Settings")
-        self.tray_show_action.triggered.connect(self.show_and_activate)
+        self.tray_show_action = tray_menu.addAction("Show Overlay Settings")
+        self.tray_show_action.triggered.connect(self.show_overlay_settings_panel)
         
         tray_menu.addSeparator()
         
@@ -111,12 +211,21 @@ class MainWindow(QMainWindow):
 
     def _on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            self.show_and_activate()
+            self.show_overlay_settings_panel()
 
     def show_and_activate(self):
-        self.show()
-        self.activateWindow()
-        self.raise_()
+        # Legacy entry point retained for compatibility; prefer overlay panel.
+        self.show_overlay_settings_panel()
+        self.hide()
+
+    def show_overlay_settings_panel(self):
+        """Bring the overlay control panel to the front and open Settings view."""
+        try:
+            self.translation_overlay.show()
+            self.translation_overlay.control_panel.show_settings_view()
+            self.translation_overlay.control_panel.raise_()
+        except Exception:
+            pass
 
     def _create_general_tab(self) -> QWidget:
         """Create general settings tab"""
@@ -181,6 +290,15 @@ class MainWindow(QMainWindow):
         self.hide_overlay_checkbox.setToolTip("Temporarily hide all translation bubbles from the screen")
         layout.addWidget(self.hide_overlay_checkbox)
 
+        # Log area
+        log_group = QGroupBox("Activity Log")
+        log_layout = QVBoxLayout(log_group)
+        self.log_list = QListWidget()
+        self.log_list.setMinimumHeight(150)
+        self.log_list.setStyleSheet("font-size: 11px; color: #333;")
+        log_layout.addWidget(self.log_list)
+        layout.addWidget(log_group)
+
         layout.addStretch()
         return widget
 
@@ -215,54 +333,21 @@ class MainWindow(QMainWindow):
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
-        # API settings
-        api_group = QGroupBox("Ollama API")
-        api_layout = QFormLayout(api_group)
+        # Translator settings
+        translator_group = QGroupBox("Translator Settings")
+        translator_layout = QFormLayout(translator_group)
 
-        self.api_url_edit = QLineEdit("http://192.168.0.162:11434")
         self.api_model_edit = QComboBox()
         self.api_model_edit.setEditable(True)
-        self.api_model_edit.addItem("qwen3-vl:2b-instruct")
-        self.api_model_edit.addItem("qwen3-vl:8b-instruct")
-        self.api_model_edit.setToolTip("Ollama model name. 'qwen3-vl:2b-instruct' is recommended for performance.")
+        self.api_model_edit.addItem("facebook/nllb-200-distilled-600M")
+        self.api_model_edit.addItem("facebook/nllb-200-distilled-1.3B")
+        self.api_model_edit.setToolTip("NLLB model name from Hugging Face.")
         self.api_status_label = QLabel("Checking...")
 
-        api_layout.addRow("API URL:", self.api_url_edit)
-        api_layout.addRow("Model:", self.api_model_edit)
-        api_layout.addRow("Status:", self.api_status_label)
+        translator_layout.addRow("Model:", self.api_model_edit)
+        translator_layout.addRow("Status:", self.api_status_label)
 
-        layout.addWidget(api_group)
-
-        # Performance settings
-        perf_group = QGroupBox("Performance (Local LLM)")
-        perf_layout = QFormLayout(perf_group)
-
-        self.num_thread_spin = QSpinBox()
-        self.num_thread_spin.setRange(0, 64)
-        self.num_thread_spin.setSpecialValueText("Auto")
-        self.num_thread_spin.setToolTip("Number of CPU threads to use (0 = auto)")
-
-        self.num_gpu_spin = QSpinBox()
-        self.num_gpu_spin.setRange(0, 99)
-        self.num_gpu_spin.setValue(99)
-        self.num_gpu_spin.setToolTip("Number of layers to offload to GPU. Set high to offload the whole model.")
-
-        self.api_timeout_spin = QSpinBox()
-        self.api_timeout_spin.setRange(10, 600)
-        self.api_timeout_spin.setValue(60)
-        self.api_timeout_spin.setSuffix(" s")
-        self.api_timeout_spin.setToolTip("Request timeout in seconds. Increase if getting read timeouts.")
-
-        self.keep_alive_checkbox = QCheckBox("Keep Model Loaded")
-        self.keep_alive_checkbox.setChecked(True)
-        self.keep_alive_checkbox.setToolTip("Keep model in GPU memory after request (Recommended for speed)")
-
-        perf_layout.addRow("CPU Threads:", self.num_thread_spin)
-        perf_layout.addRow("GPU Layers:", self.num_gpu_spin)
-        perf_layout.addRow("API Timeout:", self.api_timeout_spin)
-        perf_layout.addRow(self.keep_alive_checkbox)
-
-        layout.addWidget(perf_group)
+        layout.addWidget(translator_group)
 
         # Overlay settings
         overlay_group = QGroupBox("Overlay")
@@ -274,14 +359,14 @@ class MainWindow(QMainWindow):
 
         overlay_layout.addRow("Opacity:", self.overlay_opacity_slider)
 
-        self.debug_mode_checkbox = QCheckBox("Enable Debug Mode (Show raw API boxes)")
+        self.debug_mode_checkbox = QCheckBox("Enable Debug Mode")
         overlay_layout.addRow(self.debug_mode_checkbox)
 
         self.redaction_margin_spin = QSpinBox()
         self.redaction_margin_spin.setRange(0, 100)
         self.redaction_margin_spin.setValue(15)
         self.redaction_margin_spin.setSuffix(" px")
-        self.redaction_margin_spin.setToolTip("Margin for redacting existing translations. Increase if getting duplicate translations.")
+        self.redaction_margin_spin.setToolTip("Margin for redacting existing translations.")
         overlay_layout.addRow("Redaction Margin:", self.redaction_margin_spin)
 
         layout.addWidget(overlay_group)
@@ -313,25 +398,29 @@ class MainWindow(QMainWindow):
         self.hide_shortcut.activated.connect(lambda: self.hide_overlay_checkbox.setChecked(not self.hide_overlay_checkbox.isChecked()))
 
         self.start_shortcut = QShortcut(QKeySequence("Ctrl+S"), self)
-        self.start_shortcut.activated.connect(self.toggle_translation)
+        self.start_shortcut.activated.connect(self.start_translation)
+        
+        self.stop_shortcut = QShortcut(QKeySequence("Ctrl+T"), self)
+        self.stop_shortcut.activated.connect(self.stop_translation)
 
         self.full_screen_radio.toggled.connect(self.on_mode_changed)
         self.region_select_radio.toggled.connect(self.on_mode_changed)
 
-        self.api_url_edit.textChanged.connect(self.check_api_status)
         self.api_model_edit.editTextChanged.connect(self.check_api_status)
 
         self.debug_mode_checkbox.toggled.connect(self.save_settings)
         self.overlay_opacity_slider.valueChanged.connect(self.save_settings)
         self.redaction_margin_spin.valueChanged.connect(self.save_settings)
-        self.num_thread_spin.valueChanged.connect(self.save_settings)
-        self.num_gpu_spin.valueChanged.connect(self.save_settings)
-        self.api_timeout_spin.valueChanged.connect(self.save_settings)
-        self.keep_alive_checkbox.toggled.connect(self.save_settings)
         self.minimize_on_start_checkbox.toggled.connect(self.save_settings)
 
-        self.api_status_worker.status_changed.connect(self._on_api_status_changed)
+        self.translator_status_worker.status_changed.connect(self._on_api_status_changed)
 
+        self.translation_worker.status_update.connect(
+            self.header_status.setText
+        )
+        self.translation_worker.status_update.connect(
+            self.add_log
+        )
         self.translation_worker.translation_ready.connect(
             self.translation_overlay.update_translations
         )
@@ -342,10 +431,49 @@ class MainWindow(QMainWindow):
             self.translation_overlay.show
         )
 
+        self.translation_overlay.control_panel.request_start.connect(self.start_translation)
+        self.translation_overlay.control_panel.request_stop.connect(self.stop_translation)
+        self.translation_overlay.control_panel.request_reset_settings.connect(self.reset_settings)
+        self.translation_overlay.control_panel.settings_changed.connect(self._sync_settings_from_panel)
+
+        self.model_warmup_worker.warmup_finished.connect(self._on_model_warmup_finished)
+
+    def _sync_settings_from_panel(self):
+        """Update worker and internal state when settings are changed in the overlay panel."""
+        panel = self.translation_overlay.control_panel
+        
+        # Determine mode
+        mode = TranslationMode.FULL_SCREEN if panel.mode_combo.currentText() == "Full Screen" else TranslationMode.REGION_SELECT
+        
+        if self.translation_worker.running:
+            # Update running worker
+            self.translation_worker.set_config(
+                mode=mode,
+                regions=self.regions,
+                source_lang=panel.source_lang_combo.currentText(),
+                target_lang=panel.target_lang_combo.currentText(),
+                interval=panel.interval_spin.value(),
+                redaction_margin=panel.margin_spin.value()
+            )
+        
+        # Sync Translator model
+        self.translator.model_name = panel.model_combo.currentText()
+        # Apply unified opacity instantly across overlay components
+        self.translation_overlay.set_opacity(panel.opacity_slider.value())
+        
+        # Update main UI if visible
+        self.load_settings()
+
+    def add_log(self, message):
+        """Add message to activity log"""
+        self.log_list.insertItem(0, message)
+        if self.log_list.count() > 50:
+            self.log_list.takeItem(self.log_list.count() - 1)
+
     def on_translation_worker_capture_prepare(self):
         """Handle worker preparing for capture: update geometries (used to hide)"""
         # Update worker with latest bubble geometries for redaction
-        geoms = self.translation_overlay.get_bubble_geometries()
+        geoms = self.translation_overlay.get_redaction_geometries()
         self.translation_worker.set_active_geometries(geoms)
         
         # We NO LONGER hide the overlay to prevent flickering/visibility issues
@@ -354,25 +482,24 @@ class MainWindow(QMainWindow):
     def check_api_status(self):
         """Start the API status check process with debouncing"""
         self.api_status_label.setText("Checking...")
-        self.api_status_label.setStyleSheet("color: gray")
+        self.api_status_label.setStyleSheet("color: #888")
         self.api_check_timer.start()
 
     def _do_api_status_check(self):
-        """Perform the actual API status check in a background thread"""
-        self.ollama_api.base_url = self.api_url_edit.text()
-        self.ollama_api.model = self.api_model_edit.currentText()
+        """Perform the actual translator status check in a background thread"""
+        self.translator.model_name = self.api_model_edit.currentText()
         
-        if self.api_status_worker.isRunning():
-            self.api_status_worker.terminate()
-            self.api_status_worker.wait()
+        if self.translator_status_worker.isRunning():
+            self.translator_status_worker.terminate()
+            self.translator_status_worker.wait()
             
-        self.api_status_worker.start()
+        self.translator_status_worker.start()
 
     def _on_api_status_changed(self, is_available: bool, models: list):
         """Handle the result of the API status check"""
         if is_available:
             self.api_status_label.setText("✓ Connected")
-            self.api_status_label.setStyleSheet("color: green")
+            self.api_status_label.setStyleSheet("color: #4CAF50")
             
             # Update models list if we got any
             if models:
@@ -384,30 +511,34 @@ class MainWindow(QMainWindow):
                 self.api_model_edit.blockSignals(False)
         else:
             self.api_status_label.setText("✗ Disconnected")
-            self.api_status_label.setStyleSheet("color: red")
+            self.api_status_label.setStyleSheet("color: #f44336")
 
     def toggle_overlay_visibility(self, visible):
         """Toggle translation overlay visibility"""
         if visible:
-            self.translation_overlay.hide()
-            self.status_label.setText("Translations Hidden")
+            self.translation_overlay.hide_overlay_window()
+            self.header_status.setText("Translations Hidden")
         else:
-            self.translation_overlay.show()
-            self.status_label.setText("Translations Visible")
+            self.translation_overlay.show_overlay_window()
+            self.header_status.setText("Translations Visible")
 
     def on_mode_changed(self):
         """Handle translation mode change"""
-        # Ensure only one mode is selected
-        if self.sender() == self.full_screen_radio:
-            if self.full_screen_radio.isChecked():
-                self.region_select_radio.setChecked(False)
-        else:
-            if self.region_select_radio.isChecked():
-                self.full_screen_radio.setChecked(False)
+        sender = self.sender()
+        if not sender.isChecked():
+            # If everything is unchecked, re-check full screen
+            if not self.full_screen_radio.isChecked() and \
+               not self.region_select_radio.isChecked():
+                self.full_screen_radio.setChecked(True)
+            return
 
-        # Ensure at least one is checked
-        if not self.full_screen_radio.isChecked() and not self.region_select_radio.isChecked():
-            self.full_screen_radio.setChecked(True)
+        # Ensure only one mode is selected
+        if sender == self.full_screen_radio:
+            self.region_select_radio.setChecked(False)
+        elif sender == self.region_select_radio:
+            self.full_screen_radio.setChecked(False)
+        
+        self.save_settings()
 
     def add_region(self):
         """Add new translation region"""
@@ -437,7 +568,7 @@ class MainWindow(QMainWindow):
         if 0 <= current_row < len(self.regions):
             region = self.regions[current_row]
             # TODO: Implement region testing
-            print(f"Testing region: {region.name}")
+            logger.info(f"Testing region: {region.name}")
 
     def update_regions_list(self):
         """Update regions list display"""
@@ -453,7 +584,7 @@ class MainWindow(QMainWindow):
         """Clear all translations and reset hashes to force new analysis"""
         self.translation_overlay.clear_translations()
         self.translation_worker.clear_hashes()
-        self.status_label.setText("Translations Cleared")
+        self.header_status.setText("Translations Cleared")
 
     def toggle_translation(self):
         """Toggle translation process start/stop"""
@@ -464,54 +595,98 @@ class MainWindow(QMainWindow):
 
     def start_translation(self):
         """Start translation process"""
-        self.ollama_api.base_url = self.api_url_edit.text()
-        self.ollama_api.model = self.api_model_edit.currentText()
-        self.ollama_api.num_thread = self.num_thread_spin.value()
-        self.ollama_api.num_gpu = self.num_gpu_spin.value()
-        self.ollama_api.timeout = self.api_timeout_spin.value()
-        self.ollama_api.keep_alive = -1 if self.keep_alive_checkbox.isChecked() else 0
-        self.ollama_api.debug = self.debug_mode_checkbox.isChecked()
+        self.translator.model_name = self.translation_overlay.control_panel.model_combo.currentText()
+
+        if self.model_warmup_worker.isRunning():
+            self.header_status.setText("Model is still loading...")
+            self.translation_overlay.control_panel.status_label.setText("Model loading...")
+            return
         
-        if not self.ollama_api.is_available():
-            self.status_label.setText("Error: Ollama API not available")
+        # Configure worker (deferred until model warmup completes)
+        if self.full_screen_radio.isChecked():
+            mode = TranslationMode.FULL_SCREEN
+        else:
+            mode = TranslationMode.REGION_SELECT
+
+        self._pending_translation_start = {
+            "mode": mode,
+            "regions": self.regions,
+            "source_lang": self.translation_overlay.control_panel.source_lang_combo.currentText(),
+            "target_lang": self.translation_overlay.control_panel.target_lang_combo.currentText(),
+            "interval": self.translation_overlay.control_panel.interval_spin.value(),
+            "redaction_margin": self.translation_overlay.control_panel.margin_spin.value(),
+            "minimize": self.minimize_on_start_checkbox.isChecked(),
+        }
+
+        # Warmup model before starting OCR/translation loop
+        self.start_button.setEnabled(False)
+        self.stop_button.setEnabled(False)
+        self.header_status.setText("Loading translation model...")
+        self.translation_overlay.control_panel.status_label.setText("Loading model...")
+        self.model_warmup_worker.start()
+
+    def _on_model_warmup_finished(self, ok: bool, error: str):
+        if not ok:
+            self._pending_translation_start = None
+            self.start_button.setEnabled(True)
+            self.stop_button.setEnabled(False)
+            self.translation_overlay.control_panel.set_running(False)
+            self.tray_toggle_action.setText("Start Translation")
+            self.header_status.setText(f"Model load failed: {error}")
+            self.translation_overlay.control_panel.status_label.setText("Load failed")
             return
 
-        # Configure worker
-        mode = TranslationMode.FULL_SCREEN if self.full_screen_radio.isChecked() else TranslationMode.REGION_SELECT
+        cfg = self._pending_translation_start
+        self._pending_translation_start = None
+        if not cfg:
+            # Start was cancelled
+            self.start_button.setEnabled(True)
+            self.stop_button.setEnabled(False)
+            self.translation_overlay.control_panel.set_running(False)
+            self.tray_toggle_action.setText("Start Translation")
+            self.header_status.setText("Ready")
+            return
 
         self.translation_worker.set_config(
-            mode=mode,
-            regions=self.regions,
-            source_lang=self.source_lang_combo.currentText(),
-            target_lang=self.target_lang_combo.currentText(),
-            interval=self.interval_spinbox.value(),
-            redaction_margin=self.redaction_margin_spin.value()
+            mode=cfg["mode"],
+            regions=cfg["regions"],
+            source_lang=cfg["source_lang"],
+            target_lang=cfg["target_lang"],
+            interval=cfg["interval"],
+            redaction_margin=cfg["redaction_margin"],
         )
 
-        # Start translation
         self.translation_worker.clear_hashes()
         self.translation_worker.start_translation()
         self.translation_overlay.show()
+        self.translation_overlay.control_panel.set_running(True)
+        self.translation_overlay.control_panel.status_label.setText("Translating")
 
-        # Update UI
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
         self.tray_toggle_action.setText("Stop Translation")
-        self.status_label.setText("Translating...")
+        self.header_status.setText("Translating...")
 
-        if self.minimize_on_start_checkbox.isChecked():
+        if cfg.get("minimize"):
             self.hide()
 
     def stop_translation(self):
         """Stop translation process"""
+        if self.model_warmup_worker.isRunning():
+            # Best-effort cancel; avoids starting OCR while the model is still loading
+            self._pending_translation_start = None
+            self.model_warmup_worker.terminate()
+            self.model_warmup_worker.wait(1000)
+
         self.translation_worker.stop_translation()
         self.translation_overlay.hide()
+        self.translation_overlay.control_panel.set_running(False)
 
         # Update UI
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
         self.tray_toggle_action.setText("Start Translation")
-        self.status_label.setText("Ready")
+        self.header_status.setText("Ready")
 
     def reset_settings(self):
         """Reset all settings to default values"""
@@ -532,32 +707,46 @@ class MainWindow(QMainWindow):
             self.regions = []
             self.update_regions_list()
             self.check_api_status()
-            self.status_label.setText("Settings Reset")
+            self.header_status.setText("Settings Reset")
 
     def load_settings(self):
         """Load application settings"""
-        self.api_url_edit.setText(self.settings.value("api_url", "http://192.168.0.162:11434"))
-        self.api_model_edit.setCurrentText(self.settings.value("api_model", "qwen3-vl:2b-instruct"))
+        self.api_model_edit.setCurrentText(self.settings.value("api_model", "facebook/nllb-200-distilled-600M"))
         self.source_lang_combo.setCurrentText(self.settings.value("source_lang", "auto"))
         self.target_lang_combo.setCurrentText(self.settings.value("target_lang", "English"))
         self.interval_spinbox.setValue(int(self.settings.value("interval", 2000)))
         self.overlay_opacity_slider.setValue(int(self.settings.value("opacity", 80)))
         self.redaction_margin_spin.setValue(int(self.settings.value("redaction_margin", 15)))
         self.debug_mode_checkbox.setChecked(self.settings.value("debug_mode", "false") == "true")
-        self.num_thread_spin.setValue(int(self.settings.value("num_thread", 0)))
-        self.num_gpu_spin.setValue(int(self.settings.value("num_gpu", 99)))
-        self.api_timeout_spin.setValue(int(self.settings.value("api_timeout", 60)))
-        self.keep_alive_checkbox.setChecked(self.settings.value("keep_alive", "true") == "true")
         self.minimize_on_start_checkbox.setChecked(self.settings.value("minimize_on_start", "true") == "true")
         
-        # Sync API object
-        self.ollama_api.base_url = self.api_url_edit.text()
-        self.ollama_api.model = self.api_model_edit.currentText()
-        self.ollama_api.num_thread = self.num_thread_spin.value()
-        self.ollama_api.num_gpu = self.num_gpu_spin.value()
-        self.ollama_api.timeout = self.api_timeout_spin.value()
-        self.ollama_api.keep_alive = -1 if self.keep_alive_checkbox.isChecked() else 0
-        self.ollama_api.debug = self.debug_mode_checkbox.isChecked()
+        # Load mode
+        mode_str = self.settings.value("translation_mode", "full_screen")
+        self.full_screen_radio.setChecked(mode_str == "full_screen")
+        self.region_select_radio.setChecked(mode_str != "full_screen")
+
+        # Sync with panel if it's already initialized
+        try:
+            panel = self.translation_overlay.control_panel
+            panel.blockSignals(True)
+            panel.source_lang_combo.setCurrentText(self.source_lang_combo.currentText())
+            panel.target_lang_combo.setCurrentText(self.target_lang_combo.currentText())
+            panel.model_combo.setCurrentText(self.api_model_edit.currentText())
+            panel.interval_spin.setValue(self.interval_spinbox.value())
+            panel.opacity_slider.setValue(self.overlay_opacity_slider.value())
+            panel.margin_spin.setValue(self.redaction_margin_spin.value())
+            panel.blockSignals(False)
+        except Exception:
+            pass
+
+        # Apply opacity immediately to the live overlay components
+        try:
+            self.translation_overlay.set_opacity(self.overlay_opacity_slider.value())
+        except Exception:
+            pass
+
+        # Sync Translator object
+        self.translator.model_name = self.api_model_edit.currentText()
         
         # Load regions
         regions_json = self.settings.value("regions", "")
@@ -567,11 +756,10 @@ class MainWindow(QMainWindow):
                 self.regions = [TranslationRegion(**r) for r in regions_data]
                 self.update_regions_list()
             except Exception as e:
-                print(f"Error loading regions: {e}")
+                logger.error(f"Error loading regions: {e}")
 
     def save_settings(self):
         """Save application settings"""
-        self.settings.setValue("api_url", self.api_url_edit.text())
         self.settings.setValue("api_model", self.api_model_edit.currentText())
         self.settings.setValue("source_lang", self.source_lang_combo.currentText())
         self.settings.setValue("target_lang", self.target_lang_combo.currentText())
@@ -579,20 +767,17 @@ class MainWindow(QMainWindow):
         self.settings.setValue("opacity", self.overlay_opacity_slider.value())
         self.settings.setValue("redaction_margin", self.redaction_margin_spin.value())
         self.settings.setValue("debug_mode", "true" if self.debug_mode_checkbox.isChecked() else "false")
-        self.settings.setValue("num_thread", self.num_thread_spin.value())
-        self.settings.setValue("num_gpu", self.num_gpu_spin.value())
-        self.settings.setValue("api_timeout", self.api_timeout_spin.value())
-        self.settings.setValue("keep_alive", "true" if self.keep_alive_checkbox.isChecked() else "false")
         self.settings.setValue("minimize_on_start", "true" if self.minimize_on_start_checkbox.isChecked() else "false")
         
-        # Sync API object
-        self.ollama_api.base_url = self.api_url_edit.text()
-        self.ollama_api.model = self.api_model_edit.currentText()
-        self.ollama_api.num_thread = self.num_thread_spin.value()
-        self.ollama_api.num_gpu = self.num_gpu_spin.value()
-        self.ollama_api.timeout = self.api_timeout_spin.value()
-        self.ollama_api.keep_alive = -1 if self.keep_alive_checkbox.isChecked() else 0
-        self.ollama_api.debug = self.debug_mode_checkbox.isChecked()
+        # Save mode
+        if self.full_screen_radio.isChecked():
+            mode_str = "full_screen"
+        else:
+            mode_str = "region_select"
+        self.settings.setValue("translation_mode", mode_str)
+
+        # Sync Translator object
+        self.translator.model_name = self.api_model_edit.currentText()
         
         # Save regions
         regions_data = [
