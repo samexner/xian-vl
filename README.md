@@ -1,6 +1,13 @@
 # Xian - Real-time Video Game Translation Overlay
 
+<img width="768" height="768" alt="xian" src="https://github.com/user-attachments/assets/7b9498fd-4786-481f-b2c9-e29632b2ec24" />
+
 Xian is a PyQt6-based translation overlay designed for Linux Wayland (specifically KDE Plasma). It uses local OCR and Transformers-based translation models (like NLLB-200) to provide real-time translations of video games or websites directly on your screen.
+
+## Screenshots
+
+![screenshot1](https://github.com/user-attachments/assets/065e1da7-6cef-4d26-999d-96516769614c)
+![Screenshot2](https://github.com/user-attachments/assets/3f9c0c0b-e773-4dac-a6aa-6a7e80cb429c)
 
 ## Features
 
