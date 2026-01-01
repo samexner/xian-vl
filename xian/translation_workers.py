@@ -452,7 +452,8 @@ class ModelWarmupWorker(QThread):
     def run(self):
         try:
             ok = self.translator.ensure_loaded()
-            self.warmup_finished.emit(ok, "" if ok else "Model warmup failed")
+            err = "" if ok else (getattr(self.translator, "last_error", "") or "Model warmup failed")
+            self.warmup_finished.emit(ok, err)
         except Exception as e:
             logger.error(f"Model warmup error: {e}")
             self.warmup_finished.emit(False, str(e))

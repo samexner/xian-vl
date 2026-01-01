@@ -339,9 +339,11 @@ class MainWindow(QMainWindow):
 
         self.api_model_edit = QComboBox()
         self.api_model_edit.setEditable(True)
+        # Suggested defaults (editable)
         self.api_model_edit.addItem("facebook/nllb-200-distilled-600M")
-        self.api_model_edit.addItem("facebook/nllb-200-distilled-1.3B")
-        self.api_model_edit.setToolTip("NLLB model name from Hugging Face.")
+        self.api_model_edit.addItem("facebook/m2m100_418M")
+        self.api_model_edit.addItem("Helsinki-NLP/opus-mt")
+        self.api_model_edit.setToolTip("Transformers model (NLLB, M2M100_418M, or Helsinki-NLP/opus-mt). For opus-mt, set source/target explicitly.")
         self.api_status_label = QLabel("Checking...")
 
         translator_layout.addRow("Model:", self.api_model_edit)
@@ -407,6 +409,16 @@ class MainWindow(QMainWindow):
         self.region_select_radio.toggled.connect(self.on_mode_changed)
 
         self.api_model_edit.editTextChanged.connect(self.check_api_status)
+        # Keep overlay panel and translator in sync when main model changes
+        self.api_model_edit.currentTextChanged.connect(self._on_main_model_changed)
+
+        # Keep Source/Target language in sync (Main → Overlay panel)
+        try:
+            self.source_lang_combo.currentTextChanged.connect(self._on_main_source_changed)
+            self.target_lang_combo.currentTextChanged.connect(self._on_main_target_changed)
+        except Exception:
+            # In case widgets are not yet available in some init paths
+            pass
 
         self.debug_mode_checkbox.toggled.connect(self.save_settings)
         self.overlay_opacity_slider.valueChanged.connect(self.save_settings)
@@ -438,31 +450,120 @@ class MainWindow(QMainWindow):
 
         self.model_warmup_worker.warmup_finished.connect(self._on_model_warmup_finished)
 
+    def _on_main_model_changed(self, text: str):
+        """Propagate model selection from main settings -> overlay panel + translator, and persist."""
+        try:
+            panel = self.translation_overlay.control_panel
+            panel.blockSignals(True)
+            panel.model_combo.setCurrentText(text)
+        except Exception:
+            pass
+        finally:
+            try:
+                panel.blockSignals(False)
+            except Exception:
+                pass
+
+        # Update translator and save
+        self.translator.model_name = text
+        self.save_settings()
+
+    def _on_main_source_changed(self, text: str):
+        """Mirror main Source language selection to overlay panel and persist."""
+        try:
+            panel = self.translation_overlay.control_panel
+            panel.blockSignals(True)
+            panel.source_lang_combo.setCurrentText(text)
+        except Exception:
+            pass
+        finally:
+            try:
+                panel.blockSignals(False)
+            except Exception:
+                pass
+        # Save and update hints (used during warmup for opus-mt)
+        self.translator.hint_source_lang = text
+        self.save_settings()
+
+    def _on_main_target_changed(self, text: str):
+        """Mirror main Target language selection to overlay panel and persist."""
+        try:
+            panel = self.translation_overlay.control_panel
+            panel.blockSignals(True)
+            panel.target_lang_combo.setCurrentText(text)
+        except Exception:
+            pass
+        finally:
+            try:
+                panel.blockSignals(False)
+            except Exception:
+                pass
+        # Save and update hints (used during warmup for opus-mt)
+        self.translator.hint_target_lang = text
+        self.save_settings()
+
     def _sync_settings_from_panel(self):
-        """Update worker and internal state when settings are changed in the overlay panel."""
+        """Update worker and internal state when settings are changed in the overlay panel.
+        IMPORTANT: Do NOT call load_settings() here, as it overwrites the panel's current
+        selections with persisted values and makes it impossible to change models from the panel.
+        """
         panel = self.translation_overlay.control_panel
-        
+
         # Determine mode
         mode = TranslationMode.FULL_SCREEN if panel.mode_combo.currentText() == "Full Screen" else TranslationMode.REGION_SELECT
-        
+
+        # Push panel settings to running worker (if active)
         if self.translation_worker.running:
-            # Update running worker
             self.translation_worker.set_config(
                 mode=mode,
                 regions=self.regions,
                 source_lang=panel.source_lang_combo.currentText(),
                 target_lang=panel.target_lang_combo.currentText(),
                 interval=panel.interval_spin.value(),
-                redaction_margin=panel.margin_spin.value()
+                redaction_margin=panel.margin_spin.value(),
             )
-        
-        # Sync Translator model
-        self.translator.model_name = panel.model_combo.currentText()
+
+        # Sync model selection from panel -> main + translator
+        new_model = panel.model_combo.currentText()
+        if new_model:
+            try:
+                self.api_model_edit.blockSignals(True)
+                self.api_model_edit.setCurrentText(new_model)
+            finally:
+                self.api_model_edit.blockSignals(False)
+            self.translator.model_name = new_model
+
         # Apply unified opacity instantly across overlay components
         self.translation_overlay.set_opacity(panel.opacity_slider.value())
-        
-        # Update main UI if visible
-        self.load_settings()
+
+        # Mirror other settings from panel -> main widgets
+        try:
+            self.source_lang_combo.blockSignals(True)
+            self.target_lang_combo.blockSignals(True)
+            self.interval_spinbox.blockSignals(True)
+            self.overlay_opacity_slider.blockSignals(True)
+            self.redaction_margin_spin.blockSignals(True)
+
+            self.source_lang_combo.setCurrentText(panel.source_lang_combo.currentText())
+            self.target_lang_combo.setCurrentText(panel.target_lang_combo.currentText())
+            self.interval_spinbox.setValue(panel.interval_spin.value())
+            self.overlay_opacity_slider.setValue(panel.opacity_slider.value())
+            self.redaction_margin_spin.setValue(panel.margin_spin.value())
+        finally:
+            try:
+                self.source_lang_combo.blockSignals(False)
+                self.target_lang_combo.blockSignals(False)
+                self.interval_spinbox.blockSignals(False)
+                self.overlay_opacity_slider.blockSignals(False)
+                self.redaction_margin_spin.blockSignals(False)
+            except Exception:
+                pass
+
+        # Persist new settings
+        self.save_settings()
+
+        # Optionally refresh API status to reflect new model selection
+        self.check_api_status()
 
     def add_log(self, message):
         """Add message to activity log"""
@@ -608,11 +709,35 @@ class MainWindow(QMainWindow):
         else:
             mode = TranslationMode.REGION_SELECT
 
+        # Source/Target are taken from the overlay panel; ensure they mirror main settings
+        src_lang = self.translation_overlay.control_panel.source_lang_combo.currentText()
+        tgt_lang = self.translation_overlay.control_panel.target_lang_combo.currentText()
+
+        # Log current selections for diagnostics
+        try:
+            logger.debug(
+                "Starting translation with model=%s, source=%s, target=%s",
+                self.translator.model_name, src_lang, tgt_lang
+            )
+        except Exception:
+            pass
+
+        # Set translator warmup hints before starting the warmup worker
+        self.translator.hint_source_lang = src_lang
+        self.translator.hint_target_lang = tgt_lang
+
+        # Validate Marian generic selection requires explicit directions
+        if (self.translator.model_name or "").lower() == "helsinki-nlp/opus-mt" and (src_lang.lower() == "auto" or not src_lang or not tgt_lang):
+            friendly = "Marian opus-mt requires explicit Source and Target (e.g., Japanese → English). 'auto' is not supported."
+            self.header_status.setText(friendly)
+            self.translation_overlay.control_panel.status_label.setText("Load failed: set Source/Target for opus-mt")
+            return
+
         self._pending_translation_start = {
             "mode": mode,
             "regions": self.regions,
-            "source_lang": self.translation_overlay.control_panel.source_lang_combo.currentText(),
-            "target_lang": self.translation_overlay.control_panel.target_lang_combo.currentText(),
+            "source_lang": src_lang,
+            "target_lang": tgt_lang,
             "interval": self.translation_overlay.control_panel.interval_spin.value(),
             "redaction_margin": self.translation_overlay.control_panel.margin_spin.value(),
             "minimize": self.minimize_on_start_checkbox.isChecked(),
@@ -632,7 +757,9 @@ class MainWindow(QMainWindow):
             self.stop_button.setEnabled(False)
             self.translation_overlay.control_panel.set_running(False)
             self.tray_toggle_action.setText("Start Translation")
-            self.header_status.setText(f"Model load failed: {error}")
+            detailed = error or getattr(self.translator, "last_error", "") or ""
+            msg = f"Model load failed: {detailed}" if detailed else "Model load failed"
+            self.header_status.setText(msg)
             self.translation_overlay.control_panel.status_label.setText("Load failed")
             return
 
@@ -679,7 +806,6 @@ class MainWindow(QMainWindow):
             self.model_warmup_worker.wait(1000)
 
         self.translation_worker.stop_translation()
-        self.translation_overlay.hide()
         self.translation_overlay.control_panel.set_running(False)
 
         # Update UI

@@ -1,5 +1,4 @@
-# xian-vl
-<img width="512" height="512" alt="xian" src="https://github.com/user-attachments/assets/f8db003f-38ba-4282-9293-427a358f8119" />
+# Xian - Real-time Video Game Translation Overlay
 
 Xian is a PyQt6-based translation overlay designed for Linux Wayland (specifically KDE Plasma). It uses local OCR and Transformers-based translation models (like NLLB-200) to provide real-time translations of video games or websites directly on your screen.
 
@@ -53,6 +52,7 @@ Xian is a PyQt6-based translation overlay designed for Linux Wayland (specifical
    - Go to the **Settings** tab.
    - Select or enter the desired **Model** (default: `facebook/nllb-200-distilled-600M`).
    - The first time you start translation, the model will be downloaded automatically (approx. 600MB for the default model).
+   - Note (Helsinki-NLP/opus-mt): When choosing the generic `Helsinki-NLP/opus-mt` option, you must set explicit Source and Target languages (e.g., Japanese → English). The app will auto-resolve and download the correct pair-specific checkpoint (e.g., `Helsinki-NLP/opus-mt-ja-en`). Using `Source=auto` is not supported for opus-mt.
 
 3. **Select Mode**:
    - In the **General** tab, choose between **Full Screen Analysis** or **Region Selection**.

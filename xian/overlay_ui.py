@@ -176,7 +176,11 @@ class OverlayControlPanel(QWidget):
 
         # Model
         self.model_combo = QComboBox()
-        self.model_combo.addItems(["facebook/nllb-200-distilled-600M", "facebook/nllb-200-distilled-1.3B"])
+        self.model_combo.addItems([
+            "facebook/nllb-200-distilled-600M",
+            "facebook/m2m100_418M",
+            "Helsinki-NLP/opus-mt",
+        ])
         self.model_combo.setEditable(True)
         settings_layout.addRow("Model:", self.model_combo)
 
@@ -199,6 +203,13 @@ class OverlayControlPanel(QWidget):
 
         self.debug_check = QCheckBox("Enable Debug Mode")
         settings_layout.addRow("", self.debug_check)
+
+        # Readability options
+        self.combine_check = QCheckBox("Combine nearby lines into paragraphs")
+        settings_layout.addRow("", self.combine_check)
+
+        self.show_full_check = QCheckBox("Show full text (expanded) by default")
+        settings_layout.addRow("", self.show_full_check)
 
         self.reset_btn = QPushButton("Reset All Settings")
         self.reset_btn.setStyleSheet("background-color: rgba(183, 28, 28, 150); font-size: 11px; margin-top: 10px;")
@@ -244,6 +255,8 @@ class OverlayControlPanel(QWidget):
         self.opacity_slider.valueChanged.connect(self._save_panel_settings)
         self.margin_spin.valueChanged.connect(self._save_panel_settings)
         self.debug_check.toggled.connect(self._save_panel_settings)
+        self.combine_check.toggled.connect(self._save_panel_settings)
+        self.show_full_check.toggled.connect(self._save_panel_settings)
 
     def _toggle_settings(self, checked):
         self.stack.setCurrentIndex(1 if checked else 0)
@@ -259,6 +272,8 @@ class OverlayControlPanel(QWidget):
         self.opacity_slider.setValue(int(s.value("opacity", 80)))
         self.margin_spin.setValue(int(s.value("redaction_margin", 15)))
         self.debug_check.setChecked(s.value("debug_mode", "false") == "true")
+        self.combine_check.setChecked(s.value("combine_paragraphs", "true") == "true")
+        self.show_full_check.setChecked(s.value("show_full_text", "true") == "true")
 
     def _save_panel_settings(self):
         self.apply_opacity(self.opacity_slider.value())
@@ -271,6 +286,8 @@ class OverlayControlPanel(QWidget):
         s.setValue("opacity", self.opacity_slider.value())
         s.setValue("redaction_margin", self.margin_spin.value())
         s.setValue("debug_mode", "true" if self.debug_check.isChecked() else "false")
+        s.setValue("combine_paragraphs", "true" if self.combine_check.isChecked() else "false")
+        s.setValue("show_full_text", "true" if self.show_full_check.isChecked() else "false")
         self.settings_changed.emit()
 
     def set_running(self, running: bool):
@@ -378,8 +395,11 @@ class OverlayWindow(QWidget):
     """Full-screen transparent container for bubbles to fix Wayland positioning"""
     def __init__(self):
         super().__init__()
+        # On some Wayland compositors, keeping a window always-on-top requires
+        # both WindowStaysOnTopHint and Tool flags, plus periodic raise_ calls.
         flags = (
             Qt.WindowType.Window
+            | Qt.WindowType.Tool
             | Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.NoDropShadowWindowHint
@@ -418,12 +438,12 @@ class OverlayWindow(QWidget):
 
 class TranslationBubble(QWidget):
     """Translation bubble, now a child of OverlayWindow for reliable positioning"""
-    def __init__(self, result: TranslationResult, opacity: int, parent_overlay: QWidget = None):
+    def __init__(self, result: TranslationResult, opacity: int, parent_overlay: QWidget = None, default_expanded: bool = False):
         super().__init__(parent_overlay)
         self.result = result
         self.opacity = opacity
         self.dragging = False
-        self.expanded = False
+        self.expanded = bool(default_expanded)
         self.drag_start_pos = QPoint()
         self.press_pos = QPoint()
         
@@ -432,6 +452,8 @@ class TranslationBubble(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         
         self.setup_ui()
+        # Respect default expansion state on creation
+        self.stack.setCurrentIndex(1 if self.expanded else 0)
         self.update_geometry()
 
     def setup_ui(self):
@@ -677,6 +699,22 @@ class TranslationOverlay(QObject):
         # Apply initial opacity to all overlay pieces
         self.set_opacity(self.opacity)
 
+        # Keep overlay above other windows by periodically re-raising.
+        # This helps on Wayland/KWin when other windows steal the topmost layer.
+        self._keep_on_top_timer = QTimer(self)
+        self._keep_on_top_timer.setInterval(2000)
+        self._keep_on_top_timer.timeout.connect(self._ensure_on_top)
+        self._keep_on_top_timer.start()
+
+    def _ensure_on_top(self):
+        try:
+            if self.overlay_window.isVisible():
+                self.overlay_window.raise_()
+            if self.control_panel.isVisible():
+                self.control_panel.raise_()
+        except Exception:
+            pass
+
     def set_opacity(self, opacity: int):
         """Apply a unified opacity value across overlay window, control panel, and bubbles."""
         self.opacity = int(opacity)
@@ -805,10 +843,73 @@ class TranslationOverlay(QObject):
                 from dataclasses import replace
                 merged_results.append(replace(res))
 
+        # Optional: combine nearby lines into paragraph clusters for readability
+        combine_mode = False
+        default_expanded = False
+        try:
+            if self.control_panel and not sip.isdeleted(self.control_panel):
+                combine_mode = self.control_panel.combine_check.isChecked()
+                default_expanded = self.control_panel.show_full_check.isChecked()
+        except Exception:
+            pass
+
+        clustered_results: List[TranslationResult]
+        if combine_mode:
+            # Cluster by vertical proximity and horizontal overlap
+            from dataclasses import replace
+            clusters = []  # each: dict(rect: QRect, items: List[TranslationResult])
+            for res in merged_results:
+                placed = False
+                for cl in clusters:
+                    rect: QRect = cl["rect"]
+                    # proximity thresholds
+                    vert_close = abs(res.y - (rect.y() + rect.height()/2)) < 28 or (rect.top()-30 <= res.y <= rect.bottom()+30)
+                    # horizontal overlap check
+                    res_rect = QRect(int(res.x), int(res.y), int(res.width), int(res.height))
+                    overlap = rect.intersects(res_rect) or (res_rect.left() <= rect.right()+20 and res_rect.right() >= rect.left()-20)
+                    if vert_close and overlap:
+                        # add to cluster
+                        cl["items"].append(res)
+                        rect = rect.united(res_rect)
+                        cl["rect"] = rect
+                        placed = True
+                        break
+                if not placed:
+                    clusters.append({"rect": QRect(int(res.x), int(res.y), int(res.width), int(res.height)), "items": [res]})
+
+            # For each cluster, order items top-to-bottom, left-to-right, and combine text
+            clustered_results = []
+            for cl in clusters:
+                items = sorted(cl["items"], key=lambda r: (int(r.y), int(r.x)))
+                rect = cl["rect"]
+                texts = []
+                for it in items:
+                    t = (it.translated_text or "").strip()
+                    if not t:
+                        continue
+                    texts.append(t)
+                # Join with newlines to keep independence clear
+                combined_text = "\n".join(texts)
+                if not combined_text:
+                    continue
+                # Build a representative TranslationResult
+                base = replace(items[0])
+                base.translated_text = combined_text
+                base.x = float(rect.x())
+                base.y = float(rect.y())
+                base.width = float(rect.width())
+                base.height = float(rect.height())
+                clustered_results.append(base)
+            # Sort clusters
+            clustered_results.sort(key=lambda r: (int(r.y), int(r.x)))
+        else:
+            clustered_results = merged_results
+
         # 2. Update existing bubbles or create new ones
-        for result in merged_results:
+        for result in clustered_results:
             best_match = None
             highest_score = 0.0
+            append_below_target = None
             
             result_text_norm = result.translated_text.strip().lower()
             new_source_rect = QRect(int(result.x), int(result.y), int(result.width), int(result.height))
@@ -820,6 +921,16 @@ class TranslationOverlay(QObject):
                 ex = bubble.result
                 ex_text_norm = ex.translated_text.strip().lower()
                 ex_source_rect = QRect(int(ex.x), int(ex.y), int(ex.width), int(ex.height))
+                
+                # Detect "append beneath" case: new text appears just below existing bubble's source
+                try:
+                    vert_gap = new_source_rect.top() - ex_source_rect.bottom()
+                    horiz_overlap = min(ex_source_rect.right(), new_source_rect.right()) - max(ex_source_rect.left(), new_source_rect.left())
+                    min_overlap = min(ex_source_rect.width(), new_source_rect.width()) * 0.3
+                    if 0 <= vert_gap <= 36 and horiz_overlap >= min_overlap:
+                        append_below_target = bubble
+                except Exception:
+                    pass
                 
                 iou = 0.0
                 if ex_source_rect.intersects(new_source_rect):
@@ -842,6 +953,28 @@ class TranslationOverlay(QObject):
                     highest_score = score
                     best_match = bubble
             
+            # If we detected a likely line continuation beneath an existing bubble, append text
+            if append_below_target and result.translated_text.strip():
+                try:
+                    from dataclasses import replace
+                    base = replace(append_below_target.result)
+                    # Append a new line with the new translated text
+                    if base.translated_text.endswith("\n"):
+                        base.translated_text = base.translated_text + result.translated_text.strip()
+                    else:
+                        base.translated_text = base.translated_text + "\n" + result.translated_text.strip()
+                    # Expand source rect to include the new area below
+                    union_rect = QRect(int(base.x), int(base.y), int(base.width), int(base.height)).united(new_source_rect)
+                    base.x = float(union_rect.x())
+                    base.y = float(union_rect.y())
+                    base.width = float(union_rect.width())
+                    base.height = float(union_rect.height())
+                    append_below_target.update_content(base)
+                    matched_bubble_ids.add(id(append_below_target))
+                    continue
+                except Exception:
+                    pass
+
             if best_match and highest_score > 0.4:
                 try:
                     best_match.update_content(result)
@@ -851,7 +984,7 @@ class TranslationOverlay(QObject):
                     pass
 
             try:
-                bubble = TranslationBubble(result, opacity, self.overlay_window)
+                bubble = TranslationBubble(result, opacity, self.overlay_window, default_expanded=default_expanded)
                 if not sip.isdeleted(bubble):
                     self.bubbles.append(bubble)
                     matched_bubble_ids.add(id(bubble))
