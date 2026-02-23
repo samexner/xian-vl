@@ -235,7 +235,7 @@ class ScreenCapture:
 
     @staticmethod
     def preprocess_image(image_data: bytes) -> bytes:
-        """Enhance image for better OCR/translation results"""
+        """Enhance image for better vision-language model processing results"""
         image = QImage.fromData(image_data)
         if image.isNull():
             return image_data
@@ -245,12 +245,12 @@ class ScreenCapture:
 
         # 2. Simple contrast enhancement: Normalize
         # We find the min/max pixel values and stretch the range
-        # Note: In a real app we might use something like histogram equalization, 
+        # Note: In a real app we might use something like histogram equalization,
         # but for VLMs, clear grayscale with good contrast is often enough.
-        
+
         # This is a basic way to "normalize" using QImage if we don't want OpenCV
-        # For efficiency, we just return the grayscale image for now which already helps OCR
-        
+        # For efficiency, we just return the grayscale image for now which already helps
+
         buffer = QBuffer()
         buffer.open(QIODevice.OpenModeFlag.WriteOnly)
         image.save(buffer, "PNG")

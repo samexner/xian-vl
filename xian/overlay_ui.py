@@ -177,11 +177,16 @@ class OverlayControlPanel(QWidget):
         # Model
         self.model_combo = QComboBox()
         self.model_combo.addItems([
-            "facebook/nllb-200-distilled-600M",
-            "facebook/m2m100_418M",
-            "Helsinki-NLP/opus-mt",
+            "Qwen3-VL-8B-Thinking (Auto-select)",
+            "Qwen3-VL-4B-Thinking",
+            "Qwen3-VL-8B-Thinking",
+            "Qwen3-VL-4B-Instruct",
+            "Qwen3-VL-8B-Instruct",
+            "TranslateGemma-12B (High Quality)",
+            "TranslateGemma-4B (Lower Resource)",
         ])
         self.model_combo.setEditable(True)
+        self.model_combo.setToolTip("Vision-Language model for unified OCR and translation")
         settings_layout.addRow("Model:", self.model_combo)
 
         # Timing
@@ -273,7 +278,7 @@ class OverlayControlPanel(QWidget):
             "Full Screen" if s.value("translation_mode", "full_screen") == "full_screen" else "Region Selection")
         self.source_lang_combo.setCurrentText(s.value("source_lang", "auto"))
         self.target_lang_combo.setCurrentText(s.value("target_lang", "English"))
-        self.model_combo.setCurrentText(s.value("model_name", "facebook/nllb-200-distilled-600M"))
+        self.model_combo.setCurrentText(s.value("model_name", "Qwen3-VL-8B-Thinking (Auto-select)"))
         self.interval_spin.setValue(int(s.value("interval", 2000)))
         self.opacity_slider.setValue(int(s.value("opacity", 80)))
         self.margin_spin.setValue(int(s.value("redaction_margin", 15)))
@@ -633,7 +638,7 @@ class TranslationBubble(QWidget):
         padding = 20
         if not self.expanded:
             text = self.collapsed_label.text()
-            # `TranslationResult` coordinates/sizes may be floats (EasyOCR outputs floats).
+            # `TranslationResult` coordinates/sizes may be floats.
             # Qt geometry APIs require ints.
             measure_width = max(150.0, float(self.result.width) + padding * 2)
             if measure_width > 350:

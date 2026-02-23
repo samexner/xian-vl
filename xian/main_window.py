@@ -9,8 +9,8 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, QRect, QSettings, pyqtSlot
 from PyQt6.QtGui import QIcon, QShortcut, QKeySequence
 
-from .translation_service import TransformersTranslator
-from .translation_workers import TranslationWorker, TranslatorStatusWorker, ModelWarmupWorker
+from .qwen_pipeline import VLProcessor, VLConfig
+from .qwen_translation_workers import QwenTranslationWorker, QwenTranslatorStatusWorker, QwenModelWarmupWorker
 from .overlay_ui import TranslationOverlay
 from .region_selector import RegionSelector
 from .models import TranslationMode, TranslationRegion
@@ -23,10 +23,10 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowIcon(QIcon("xian.png"))
-        self.translator = TransformersTranslator()
-        self.translation_worker = TranslationWorker(self.translator)
-        self.translator_status_worker = TranslatorStatusWorker(self.translator)
-        self.model_warmup_worker = ModelWarmupWorker(self.translator)
+        self.qwen_processor = VLProcessor()
+        self.translation_worker = QwenTranslationWorker(self.qwen_processor)
+        self.translator_status_worker = QwenTranslatorStatusWorker(self.qwen_processor)
+        self.model_warmup_worker = QwenModelWarmupWorker(self.qwen_processor)
         self.translation_overlay = TranslationOverlay(self)
         self.region_selector = None
         self.regions = []
@@ -339,17 +339,50 @@ class MainWindow(QMainWindow):
 
         self.api_model_edit = QComboBox()
         self.api_model_edit.setEditable(True)
-        # Suggested defaults (editable)
-        self.api_model_edit.addItem("facebook/nllb-200-distilled-600M")
-        self.api_model_edit.addItem("facebook/m2m100_418M")
-        self.api_model_edit.addItem("Helsinki-NLP/opus-mt")
-        self.api_model_edit.setToolTip("Transformers model (NLLB, M2M100_418M, or Helsinki-NLP/opus-mt). For opus-mt, set source/target explicitly.")
+        # Suggested defaults (editable) - Updated for both Qwen3-VL and TranslateGemma
+        self.api_model_edit.addItem("Qwen3-VL-8B-Thinking (Auto-select)")
+        self.api_model_edit.addItem("Qwen3-VL-4B-Thinking")
+        self.api_model_edit.addItem("Qwen3-VL-8B-Thinking")
+        self.api_model_edit.addItem("Qwen3-VL-4B-Instruct")
+        self.api_model_edit.addItem("Qwen3-VL-8B-Instruct")
+        self.api_model_edit.addItem("TranslateGemma-12B (High Quality)")
+        self.api_model_edit.addItem("TranslateGemma-4B (Lower Resource)")
+        self.api_model_edit.setToolTip("Vision-Language model (Qwen3-VL or TranslateGemma)")
         self.api_status_label = QLabel("Checking...")
 
         translator_layout.addRow("Model:", self.api_model_edit)
         translator_layout.addRow("Status:", self.api_status_label)
 
         layout.addWidget(translator_group)
+
+        # Qwen3-VL specific settings
+        qwen_group = QGroupBox("Qwen3-VL Settings")
+        qwen_layout = QFormLayout(qwen_group)
+
+        # Thinking mode toggle
+        self.thinking_mode_checkbox = QCheckBox("Enable Thinking Mode (Chain of Thought)")
+        self.thinking_mode_checkbox.setToolTip("Enable Chain of Thought reasoning for complex layouts (slower but more accurate)")
+        qwen_layout.addRow(self.thinking_mode_checkbox)
+
+        # Max tokens slider
+        self.max_tokens_slider = QSlider(Qt.Orientation.Horizontal)
+        self.max_tokens_slider.setRange(256, 4096)
+        self.max_tokens_slider.setValue(1024)
+        self.max_tokens_slider.setToolTip("Maximum tokens for the model response")
+        max_tokens_label = QLabel(f"{self.max_tokens_slider.value()}")
+        self.max_tokens_slider.valueChanged.connect(lambda v: max_tokens_label.setText(str(v)))
+        max_tokens_hbox = QHBoxLayout()
+        max_tokens_hbox.addWidget(self.max_tokens_slider)
+        max_tokens_hbox.addWidget(max_tokens_label)
+        qwen_layout.addRow("Max Tokens:", max_tokens_hbox)
+
+        # Model size override
+        self.model_size_combo = QComboBox()
+        self.model_size_combo.addItems(["Auto-detect", "4B", "8B"])
+        self.model_size_combo.setToolTip("Override automatic model size selection based on VRAM")
+        qwen_layout.addRow("Model Size Override:", self.model_size_combo)
+
+        layout.addWidget(qwen_group)
 
         # Overlay settings
         overlay_group = QGroupBox("Overlay")
@@ -424,6 +457,11 @@ class MainWindow(QMainWindow):
         self.overlay_opacity_slider.valueChanged.connect(self.save_settings)
         self.redaction_margin_spin.valueChanged.connect(self.save_settings)
         self.minimize_on_start_checkbox.toggled.connect(self.save_settings)
+        
+        # Connect Qwen3-VL specific settings
+        self.thinking_mode_checkbox.toggled.connect(self._on_thinking_mode_changed)
+        self.max_tokens_slider.valueChanged.connect(self._on_max_tokens_changed)
+        self.model_size_combo.currentTextChanged.connect(self._on_model_size_changed)
 
         self.translator_status_worker.status_changed.connect(self._on_api_status_changed)
 
@@ -450,6 +488,26 @@ class MainWindow(QMainWindow):
 
         self.model_warmup_worker.warmup_finished.connect(self._on_model_warmup_finished)
 
+    def _on_thinking_mode_changed(self, checked: bool):
+        """Handle thinking mode toggle change"""
+        self.qwen_processor.config.thinking_mode = checked
+        self.save_settings()
+
+    def _on_max_tokens_changed(self, value: int):
+        """Handle max tokens slider change"""
+        self.qwen_processor.config.max_tokens = value
+        self.save_settings()
+
+    def _on_model_size_changed(self, text: str):
+        """Handle model size combo change"""
+        if text == "4B":
+            self.qwen_processor.config.model_size = "4b"
+        elif text == "8B":
+            self.qwen_processor.config.model_size = "8b"
+        else:  # Auto-detect
+            self.qwen_processor.config.model_size = "auto"
+        self.save_settings()
+
     def _on_main_model_changed(self, text: str):
         """Propagate model selection from main settings -> overlay panel + translator, and persist."""
         try:
@@ -464,8 +522,8 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-        # Update translator and save
-        self.translator.model_name = text
+        # Update processor and save
+        # For QwenVLProcessor, model selection is handled differently
         self.save_settings()
 
     def _on_main_source_changed(self, text: str):
@@ -481,8 +539,7 @@ class MainWindow(QMainWindow):
                 panel.blockSignals(False)
             except Exception:
                 pass
-        # Save and update hints (used during warmup for opus-mt)
-        self.translator.hint_source_lang = text
+        # Save settings
         self.save_settings()
 
     def _on_main_target_changed(self, text: str):
@@ -498,8 +555,7 @@ class MainWindow(QMainWindow):
                 panel.blockSignals(False)
             except Exception:
                 pass
-        # Save and update hints (used during warmup for opus-mt)
-        self.translator.hint_target_lang = text
+        # Save settings
         self.save_settings()
 
     def _sync_settings_from_panel(self):
@@ -523,7 +579,7 @@ class MainWindow(QMainWindow):
                 redaction_margin=panel.margin_spin.value(),
             )
 
-        # Sync model selection from panel -> main + translator
+        # Sync model selection from panel -> main + processor
         new_model = panel.model_combo.currentText()
         if new_model:
             try:
@@ -531,7 +587,7 @@ class MainWindow(QMainWindow):
                 self.api_model_edit.setCurrentText(new_model)
             finally:
                 self.api_model_edit.blockSignals(False)
-            self.translator.model_name = new_model
+            # For QwenVLProcessor, model selection is handled differently
 
         # Apply unified opacity instantly across overlay components
         self.translation_overlay.set_opacity(panel.opacity_slider.value())
@@ -587,13 +643,15 @@ class MainWindow(QMainWindow):
         self.api_check_timer.start()
 
     def _do_api_status_check(self):
-        """Perform the actual translator status check in a background thread"""
-        self.translator.model_name = self.api_model_edit.currentText()
+        """Perform the actual Qwen processor status check in a background thread"""
+        # For QwenVLProcessor, model selection is handled differently
+        # We'll pass the model size setting to the processor
+        model_text = self.api_model_edit.currentText()
         
         if self.translator_status_worker.isRunning():
             self.translator_status_worker.terminate()
             self.translator_status_worker.wait()
-            
+
         self.translator_status_worker.start()
 
     def _on_api_status_changed(self, is_available: bool, models: list):
@@ -696,13 +754,14 @@ class MainWindow(QMainWindow):
 
     def start_translation(self):
         """Start translation process"""
-        self.translator.model_name = self.translation_overlay.control_panel.model_combo.currentText()
+        # For QwenVLProcessor, model selection is handled differently
+        model_selection = self.translation_overlay.control_panel.model_combo.currentText()
 
         if self.model_warmup_worker.isRunning():
             self.header_status.setText("Model is still loading...")
             self.translation_overlay.control_panel.status_label.setText("Model loading...")
             return
-        
+
         # Configure worker (deferred until model warmup completes)
         if self.full_screen_radio.isChecked():
             mode = TranslationMode.FULL_SCREEN
@@ -717,21 +776,28 @@ class MainWindow(QMainWindow):
         try:
             logger.debug(
                 "Starting translation with model=%s, source=%s, target=%s",
-                self.translator.model_name, src_lang, tgt_lang
+                model_selection, src_lang, tgt_lang
             )
         except Exception:
             pass
 
-        # Set translator warmup hints before starting the warmup worker
-        self.translator.hint_source_lang = src_lang
-        self.translator.hint_target_lang = tgt_lang
+        # For VLProcessor, we don't need hint_source_lang/hint_target_lang
+        # Set the model in the processor based on the selection
+        self.qwen_processor.config.model_name = model_selection
+        
+        # Set model size for Qwen models, or mark as TranslateGemma
+        if "translategemma" in model_selection.lower():
+            # For TranslateGemma, we don't use model_size, just the model name
+            pass
+        elif "4b" in model_selection.lower():
+            self.qwen_processor.config.model_size = "4b"
+        elif "8b" in model_selection.lower():
+            self.qwen_processor.config.model_size = "8b"
+        else:
+            self.qwen_processor.config.model_size = "auto"
 
-        # Validate Marian generic selection requires explicit directions
-        if (self.translator.model_name or "").lower() == "helsinki-nlp/opus-mt" and (src_lang.lower() == "auto" or not src_lang or not tgt_lang):
-            friendly = "Marian opus-mt requires explicit Source and Target (e.g., Japanese → English). 'auto' is not supported."
-            self.header_status.setText(friendly)
-            self.translation_overlay.control_panel.status_label.setText("Load failed: set Source/Target for opus-mt")
-            return
+        # Update thinking mode based on settings
+        self.qwen_processor.config.thinking_mode = "thinking" in model_selection.lower()
 
         self._pending_translation_start = {
             "mode": mode,
@@ -746,7 +812,7 @@ class MainWindow(QMainWindow):
         # Warmup model before starting OCR/translation loop
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(False)
-        self.header_status.setText("Loading translation model...")
+        self.header_status.setText("Loading Qwen3-VL model...")
         self.translation_overlay.control_panel.status_label.setText("Loading model...")
         self.model_warmup_worker.start()
 
@@ -757,7 +823,7 @@ class MainWindow(QMainWindow):
             self.stop_button.setEnabled(False)
             self.translation_overlay.control_panel.set_running(False)
             self.tray_toggle_action.setText("Start Translation")
-            detailed = error or getattr(self.translator, "last_error", "") or ""
+            detailed = error or "Qwen3-VL model failed to load"
             msg = f"Model load failed: {detailed}" if detailed else "Model load failed"
             self.header_status.setText(msg)
             self.translation_overlay.control_panel.status_label.setText("Load failed")
@@ -837,7 +903,7 @@ class MainWindow(QMainWindow):
 
     def load_settings(self):
         """Load application settings"""
-        self.api_model_edit.setCurrentText(self.settings.value("api_model", "facebook/nllb-200-distilled-600M"))
+        self.api_model_edit.setCurrentText(self.settings.value("api_model", "Qwen3-VL-8B-Thinking (Auto-select)"))
         self.source_lang_combo.setCurrentText(self.settings.value("source_lang", "auto"))
         self.target_lang_combo.setCurrentText(self.settings.value("target_lang", "English"))
         self.interval_spinbox.setValue(int(self.settings.value("interval", 2000)))
@@ -845,7 +911,12 @@ class MainWindow(QMainWindow):
         self.redaction_margin_spin.setValue(int(self.settings.value("redaction_margin", 15)))
         self.debug_mode_checkbox.setChecked(self.settings.value("debug_mode", "false") == "true")
         self.minimize_on_start_checkbox.setChecked(self.settings.value("minimize_on_start", "true") == "true")
-        
+
+        # Load Qwen3-VL specific settings
+        self.thinking_mode_checkbox.setChecked(self.settings.value("thinking_mode", "true") == "true")
+        self.max_tokens_slider.setValue(int(self.settings.value("max_tokens", 1024)))
+        self.model_size_combo.setCurrentText(self.settings.value("model_size_override", "Auto-detect"))
+
         # Load mode
         mode_str = self.settings.value("translation_mode", "full_screen")
         self.full_screen_radio.setChecked(mode_str == "full_screen")
@@ -871,9 +942,33 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        # Sync Translator object
-        self.translator.model_name = self.api_model_edit.currentText()
+        # Sync VLProcessor object
+        # For VLProcessor, model selection is handled differently
+        model_text = self.api_model_edit.currentText()
+        self.qwen_processor.config.model_name = model_text
         
+        # Set model size for Qwen models, or mark as TranslateGemma
+        if "translategemma" in model_text.lower():
+            # For TranslateGemma, we don't use model_size, just the model name
+            pass
+        elif "4b" in model_text.lower():
+            self.qwen_processor.config.model_size = "4b"
+        elif "8b" in model_text.lower():
+            self.qwen_processor.config.model_size = "8b"
+        else:
+            self.qwen_processor.config.model_size = "auto"
+
+        # Update thinking mode based on settings
+        self.qwen_processor.config.thinking_mode = "thinking" in model_text.lower() or self.thinking_mode_checkbox.isChecked()
+        self.qwen_processor.config.max_tokens = self.max_tokens_slider.value()
+
+        # Apply model size override if set
+        override_size = self.model_size_combo.currentText()
+        if override_size == "4B":
+            self.qwen_processor.config.model_size = "4b"
+        elif override_size == "8B":
+            self.qwen_processor.config.model_size = "8b"
+
         # Load regions
         regions_json = self.settings.value("regions", "")
         if regions_json:
@@ -902,9 +997,11 @@ class MainWindow(QMainWindow):
             mode_str = "region_select"
         self.settings.setValue("translation_mode", mode_str)
 
-        # Sync Translator object
-        self.translator.model_name = self.api_model_edit.currentText()
-        
+        # Save Qwen3-VL specific settings
+        self.settings.setValue("thinking_mode", "true" if self.thinking_mode_checkbox.isChecked() else "false")
+        self.settings.setValue("max_tokens", self.max_tokens_slider.value())
+        self.settings.setValue("model_size_override", self.model_size_combo.currentText())
+
         # Save regions
         regions_data = [
             {
