@@ -7,3 +7,5 @@ pynvml
 Pillow
 imagehash
 lmdb
+opencv-python-headless
+numpy

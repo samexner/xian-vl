@@ -618,6 +618,45 @@ class TranslationBubble(QWidget):
         layout.addWidget(self.stack)
         self._update_text_displays()
 
+    def apply_detected_style(self):
+        """Apply detected text style to the bubble labels"""
+        style = self.result.style
+        if not style:
+            # Use default styling
+            default_style = "color: white; font-weight: bold; font-size: 14px; background: transparent;"
+            self.collapsed_label.setStyleSheet(default_style)
+            self.expanded_label.setStyleSheet(default_style)
+            return
+        
+        # Convert RGB to QColor
+        text_color = QColor(*style.text_color)
+        
+        # Build style sheet
+        font_weight = "bold" if style.font_weight == "bold" else "normal"
+        font_size = max(8, min(72, int(style.font_size)))
+        
+        style_sheet = f"""
+            color: rgb({text_color.red()}, {text_color.green()}, {text_color.blue()});
+            font-weight: {font_weight};
+            font-size: {font_size}px;
+            background: transparent;
+        """
+        
+        # Apply rotation if needed
+        if style.rotation_angle != 0:
+            # Note: QLabel doesn't support rotation directly, we'd need to use a custom paint event
+            # For now, we'll just note the rotation for future enhancement
+            pass
+        
+        # Apply background color if detected
+        if style.background_color:
+            bg_color = QColor(*style.background_color)
+            # Add semi-transparent background for readability
+            style_sheet += f" background-color: rgba({bg_color.red()}, {bg_color.green()}, {bg_color.blue()}, 200);"
+        
+        self.collapsed_label.setStyleSheet(style_sheet)
+        self.expanded_label.setStyleSheet(style_sheet)
+
     def _get_truncated_text(self, text, word_limit=8):
         words = text.split()
         if len(words) <= word_limit:
@@ -732,21 +771,42 @@ class TranslationBubble(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         rect = self.rect()
-        # Match the control panel look: slightly lighter by default + subtle border.
-        # Opacity setting still influences the alpha, but we clamp so bubbles don't get overly dark.
-        opacity_alpha = int(self.opacity * 2.55)
-        bg_alpha = max(80, min(170, opacity_alpha))
-
-        radius = 10
-        # Draw subtle shadow
-        painter.setBrush(QColor(0, 0, 0, min(200, bg_alpha + 20)))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawRoundedRect(rect.translated(2, 2), radius, radius)
-
-        # Draw background
-        painter.setBrush(QColor(0, 0, 0, bg_alpha))
-        painter.setPen(QColor(255, 255, 255, 60))
-        painter.drawRoundedRect(rect, radius, radius)
+        
+        # Check if we have style information for context-aware rendering
+        style = self.result.style
+        
+        if style and style.background_color:
+            # Use detected background color with reconstruction
+            bg_color = QColor(*style.background_color)
+            opacity_alpha = int(self.opacity * 2.55)
+            bg_alpha = max(100, min(200, opacity_alpha))
+            bg_color.setAlpha(bg_alpha)
+            
+            radius = 10
+            # Draw subtle shadow
+            painter.setBrush(QColor(0, 0, 0, min(200, bg_alpha + 20)))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRoundedRect(rect.translated(2, 2), radius, radius)
+            
+            # Draw reconstructed background
+            painter.setBrush(bg_color)
+            painter.setPen(QColor(255, 255, 255, 60))
+            painter.drawRoundedRect(rect, radius, radius)
+        else:
+            # Default styling
+            opacity_alpha = int(self.opacity * 2.55)
+            bg_alpha = max(80, min(170, opacity_alpha))
+            
+            radius = 10
+            # Draw subtle shadow
+            painter.setBrush(QColor(0, 0, 0, min(200, bg_alpha + 20)))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRoundedRect(rect.translated(2, 2), radius, radius)
+            
+            # Draw background
+            painter.setBrush(QColor(0, 0, 0, bg_alpha))
+            painter.setPen(QColor(255, 255, 255, 60))
+            painter.drawRoundedRect(rect, radius, radius)
 
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:

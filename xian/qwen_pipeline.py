@@ -19,7 +19,8 @@ try:
 except ImportError:
     VLLM_AVAILABLE = False
 
-from .models import TranslationResult
+from .models import TranslationResult, TextStyle
+from .style_detection import StyleDetector, BackgroundReconstructor
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,10 @@ class VLProcessor:
         self.engine = None
         self.model_id = None
         self.is_translategemma = False  # Flag to track if using TranslateGemma
+        
+        # Initialize style detection and background reconstruction
+        self.style_detector = StyleDetector()
+        self.background_reconstructor = BackgroundReconstructor()
         
         if not VLLM_AVAILABLE:
             raise ImportError(
@@ -334,7 +339,22 @@ Rules:
                 if not translated_text.strip():
                     logger.debug("No text detected in image")
                     return []
+
+                # Detect text style from the image for context-aware rendering
+                # Use the center region of the image as a representative sample
+                img_width, img_height = image.size
+                style_bbox = (
+                    img_width * 0.25,
+                    img_height * 0.25,
+                    img_width * 0.5,
+                    img_height * 0.5
+                )
+                detected_style = self.style_detector.detect_style(image, style_bbox)
                 
+                # Create default style if detection failed
+                if detected_style is None:
+                    detected_style = TextStyle()
+
                 # For now, return a single TranslationResult with the full translation
                 # In a more sophisticated implementation, we would extract bounding boxes
                 # from the model response to create individual TranslationResult objects
@@ -342,11 +362,22 @@ Rules:
                     translated_text=translated_text,
                     x=0.0,  # Placeholder values - would come from OCR in a full implementation
                     y=0.0,
-                    width=100.0,
-                    height=50.0,
-                    confidence=0.9
+                    width=float(img_width),
+                    height=float(img_height),
+                    confidence=0.9,
+                    original_text=original_text,
+                    style=TextStyle(
+                        font_family=detected_style.font_family,
+                        font_size=detected_style.font_size,
+                        font_weight=detected_style.font_weight,
+                        text_color=detected_style.text_color,
+                        background_color=detected_style.background_color,
+                        rotation_angle=detected_style.rotation_angle,
+                        opacity=detected_style.opacity
+                    ),
+                    rotation_angle=detected_style.rotation_angle
                 )
-                
+
                 return [result]
                 
             except Exception as e:
